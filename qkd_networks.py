@@ -174,13 +174,13 @@ for N in Ns:
         for r in range(len(radii)):
             radius = radii[r]
             network_rate_avg[r] = np.average(np.array(dict_of_rate_lists_dijkstra[radius]))
-            network_rate_ebar[r] = np.std(np.array(dict_of_rate_lists_dijkstra[radius]), ddof=1)/np.sqrt(len(dict_of_rate_lists_dijkstra[radius]))
+            network_rate_ebar[r] = 2*np.std(np.array(dict_of_rate_lists_dijkstra[radius]), ddof=1)/np.sqrt(len(dict_of_rate_lists_dijkstra[radius]))
             avg_shortest_path_lens[r] = np.average(np.array(dict_of_len_lists_dijkstra[radius]))
-            ebar_shortest_path_lens[r] = np.std(np.array(dict_of_len_lists_dijkstra[radius]), ddof=1)/np.sqrt(n_iter)
+            ebar_shortest_path_lens[r] = 2*np.std(np.array(dict_of_len_lists_dijkstra[radius]), ddof=1)/np.sqrt(n_iter)
             avg_geo_dist[r] = np.average(np.array(dict_of_geo_dist_lists[radius]))
-            ebar_geo_dist[r] = np.std(np.array(dict_of_geo_dist_lists[radius]), ddof=1)/np.sqrt(len(dict_of_geo_dist_lists[radius]))
+            ebar_geo_dist[r] = 2*np.std(np.array(dict_of_geo_dist_lists[radius]), ddof=1)/np.sqrt(len(dict_of_geo_dist_lists[radius]))
             avg_topolog_dist[r] = np.average(np.array(dict_of_avg_topological_dists[radius]))
-            ebar_topolog_dist[r] = np.std(np.array(dict_of_avg_topological_dists[radius]), ddof=1)/np.sqrt(len(dict_of_avg_topological_dists[radius]))
+            ebar_topolog_dist[r] = 2*np.std(np.array(dict_of_avg_topological_dists[radius]), ddof=1)/np.sqrt(len(dict_of_avg_topological_dists[radius]))
 
     if qkd == 'CV' or qkd == 'DV':
         suffix = '_N%d' % N
