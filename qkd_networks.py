@@ -58,7 +58,6 @@ d_c_DV = bisection_solver(func_DV, 10E-06, d_max)
 diff = lambda d: func_CV(d) - func_DV(d)
 d_cross = bisection_solver(diff, 10E-06, d_max)
 
-
 d_hybrid = float('inf')                      # float('inf') to force CV-only, 0 to force DV-only, d_cross for hybrid CV/DV
 if not edges_may_fail:
     PoF = 0.
