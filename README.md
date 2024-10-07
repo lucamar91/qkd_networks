@@ -31,6 +31,6 @@ Output files are given a name depending on a certain set of parameters (includin
 - `*rhos_topd*`: average topological distance between the nodes in the network;
 - `*rhos_clus*`: clustering coefficient of the network.
 
-The files listed above are organised as arrays of three rows, containing (1) the set of densities of nodes in the network, (2) the quantity of interest corresponding to the given densities, (3) the error bars, computed as twice the standard deviation of the mean.
+The files listed above are organised as arrays of three rows, containing (1) the set of densities of nodes in the network, (2) the quantity of interest corresponding to the given densities, (3) the error bars.
 
 One last file, `*rhos_degr*`, is saved in a different format: the first row contains again the densities, and the column under each density of this row represents the histogram of the corresponding average degree distribution.
