@@ -1,12 +1,13 @@
 import matplotlib.pyplot as plt
+import os
 import numpy as np
 # from tqdm import tqdm
 from network_funcs import *
 from qopt_funcs import *
 import networkx as nx
+# import random
 import time
-plt.rcParams['figure.figsize'] = [9,7]
-plt.rcParams.update({'font.size': 15})
+import shutil    # to copy files at the end of the script (im being lazy)
 
 # WHAT DOES THIS CODE DO? 
 # It generates instances of complex networks (nw) & computes avg rate and connectivity, sweeping node densities BY CHANGING SYSTEM SIZE
@@ -14,28 +15,49 @@ plt.rcParams.update({'font.size': 15})
 # in this version im going all in w networkx: computing all the shortest paths (all_pairs_dijkstra), not just sampling
 # also im simplifying the computation and storage of the results
 
-compute_nw_rates = True      # if False only connectivity of the network is computed (to reduce the runtime)
-edges_may_fail = False       # if True: PoF parameter fixes the probability of failure of an edge (for whatsoever reason)
-PoF = 0.1
+# params are loaded through the exec of a separate file (more manageable):
+compute_nw_rates = False      # if False only connectivity of the network is computed (to reduce the runtime)
+edges_may_fail = False        # if True, an edge fails with prob PoF
+PoF = 0.1                     # enters in the network building phase
 keyrate_algo = 'parallel'     # 'parallel' or 'serial' (dijkstra)
-detection_mode = 'homodyne'    # homo-/hetero-dyne: one/both quadratures are measured by the party that drives the reconciliation
-reconciliation = 'reverse'     # type of reconciliation
-
-# params for the nw model (beta, mu inferred using Mercator):
 beta = 2.6261        # beta param of S2 model; for S1 the inferred beta was 1.2437
 mu = 0.0233          # mu param of S2 model; for S1 the inferred mu was 0.0294
-sample_from_file = False    # if True coordinates would be sampled from an existing embedding of a real network (d-Mercator needed)
+sample_from_file = False    # coordinates are sampled from the results of d-Mercator (there a max number of available nodes!)
 
+####### The state-of-the-art values for the following params are usually kept fixed and assigned in qopt_funcs.py ##########
+# params for the qkd rates:
+alpha = state_of_the_art_params.alpha           # the exponential decaying factor in T(d); units: dB/km
+freq = state_of_the_art_params.freq           # source repetition rate [Hz]: same for CV and DV
+# CV-specific
+eps_B = state_of_the_art_params.eps_B           # excess noise on Bob's side
+eps_critical = state_of_the_art_params.eps_critical   # approx estimate for critical value for excess noise (see Navascues, Acin)
+eta_source_CV = state_of_the_art_params.eta_source_CV      # (see raja's mail 26th jan) im adding it just for completeness
+eta_det_CV = state_of_the_art_params.eta_det_CV       # detector efficiency (luis: eta ranges from 0.2 to 0.8); would be interesting to sweep it
+detection_mode = 'homodyne'    # homo-/hetero-dyne: one/both quadratures are measured by the party that drives the reconciliation
+reconciliation = 'reverse'     # type of reconciliation
+T_A = state_of_the_art_params.T_A                # homodyne: 1; heterodyne: 0.5
+r_A = state_of_the_art_params.r_A               # squeezing parameter
+# DV-specific
+eta_source_DV = state_of_the_art_params.eta_source_DV     # source efficiency
+eta_det_DV = state_of_the_art_params.eta_det_DV           # detector efficiency
+R_dark = state_of_the_art_params.R_dark                   # dark count rate: 100 Hz
+deltat_det = state_of_the_art_params.deltat_det           # time gate duration: 100 ps
+p_darkcount = state_of_the_art_params.p_darkcount         # probability of having a dark count (per pulse)
+q = state_of_the_art_params.q                             # the QBER
+
+# with open('params.py') as fp: exec(fp.read())
+
+# FORCING MANUALLY SOME PARAMETERS (OVERRIDING THE ONES IN params.py)
 Ns = [100]
 rate_min = 0
 n_nodes_for_dijkstra = 20
 
-rho_span = '_wide'              # different sets of points for different plots: '_focus' (for susceptibility), '_wide' (for anything else)
+rho_span = '_wide'              # providing some presets of points for the plots: '_focus', '_wide' or anything else
 if rho_span == '_focus':
-    n_iter, n_couples = 40, 10
+    n_iter, n_couples = 40, 10       # lets keep them down, raise them for the final plots
     rhos = 0.14*10**np.linspace(-2.3,-1.9,20)
 elif rho_span == '_wide':
-    n_iter, n_couples = 10, 10
+    n_iter, n_couples = 10, 10       # lets keep them down, raise them for the final plots
     rhos = 0.14*10**np.linspace(-4.,1.,50)
 else:
     print('ERROR: variable \'rho_span\' must be \'_focus\' or \'_wide\'.')
@@ -58,7 +80,8 @@ d_c_DV = bisection_solver(func_DV, 10E-06, d_max)
 diff = lambda d: func_CV(d) - func_DV(d)
 d_cross = bisection_solver(diff, 10E-06, d_max)
 
-d_hybrid = float('inf')                      # float('inf') to force CV-only, 0 to force DV-only, d_cross for hybrid CV/DV
+
+d_hybrid = d_cross                      # float('inf') to force CV-only, 0 to force DV-only, d_cross for 'optimal' hybrid
 if not edges_may_fail:
     PoF = 0.
 
@@ -72,7 +95,9 @@ if edges_may_fail:
 start = time.time()
 for N in Ns:
     radii = np.sqrt(N/4/np.pi/rhos)
-    print('%d instances of a '%n_iter + qkd + '-QKD network with %d nodes are generated, '%N + '%d pairs of nodes are sampled per instance.'%n_couples)
+    print('%d instances of a '%n_iter + qkd + '-QKD network with %d nodes are generated, '%N + '%d pairs of nodes are sampled per instance to compute the rates.'%(n_nodes_for_dijkstra*N))
+    # if d_hybrid > d_c_CV:                  # so that the CV curve does not go to zero before the DV curve starts
+    #     print('WARNING: It is preferred to choose a value below %.2f for the hybrid distance: ' % d_c_CV)
     print('Evaluating for d_hybrid = %.2f km...'%d_hybrid)
     giant_ratio = np.zeros((n_iter, len(radii)))
     clustering_coeffs = np.zeros_like(giant_ratio)
@@ -92,7 +117,7 @@ for N in Ns:
 
     for it in range(n_iter):
         print('N=%d, instance %d'%(N,it))
-        A, Dists, coords = S2_graph_definite_N(N, beta, mu, return_coords=True)
+        A, Dists, coords = S2_graph_definite_N(N, beta, mu, sample_from_file=sample_from_file, return_coords=True)
         n_nodes_giant = []                                   # nr of nodes in largest (giant) component
         clustering_list = []
         rate_sum_accum = []
@@ -111,15 +136,13 @@ for N in Ns:
                             if np.random.uniform() > PoF * int(edges_may_fail):  # ie if edge doesnt fail (uniform returns 0<x<1 by default)
                                 W[i,j] = W[j,i] = h_rate**-1
                                 A_pruned[i,j] = A_pruned[j,i] = 1
-            # uncomment the following lines to generate plots of the system (increases runtime)
-            # if radius in radii[::5]:
-            #     plot_graph_on_sphere(coords, A_pruned, 1, filename='inst_%d' % it + 'earth_radius%.2f' % radius, bckgrnd_color = 'white', pt_color='red', edge_color='black')
+            #plot_graph_on_sphere(coords, A_pruned, 1, filename='earth_radius%.2f' % radius)    # makes things slower
             G_pruned = nx.from_numpy_array(W)          # return a weighted graph object
 
             comp_list = sorted(nx.connected_components(G_pruned), key=len, reverse=True)
             G_giant = G_pruned.subgraph(comp_list[0])
             n_nodes_giant.append(nx.number_of_nodes(G_giant))
-            # Correction to the clustering coefficient
+            # Jasper's correction to nx.average_clustering
             clustering_coefficients = nx.clustering(G_pruned)
             if len([v for v in dict(G_pruned.degree).values() if int(v) > 1]) != 0:
                 average_clustering_coefficient = sum(clustering_coefficients.values()) / len([v for v in dict(G_pruned.degree).values() if int(v) > 1])
@@ -144,7 +167,7 @@ for N in Ns:
                 node_counter = 0
                 node_max = min(len(list(comp_list[0])), n_nodes_for_dijkstra)
                 while node_counter < node_max:
-                    target = list(comp_list[0])[node_counter]   # this is done to take nodes in the same conn comp
+                    target = list(comp_list[0])[node_counter]   # this is done to take nodes in the same conn comp EDIT is this done for shpthlens?
                     weights, paths = optimal_path_algo(G_pruned, target, algo=keyrate_algo)
                     for source in range(target):
                         if nx.has_path(G_pruned, source, target):   # could i use 'weights' dict keys to check this?
@@ -165,21 +188,24 @@ for N in Ns:
     giant_ratio_avg = np.average(np.array(giant_ratio), axis=0)
     giant_ratio_ebar = 2*np.std(np.array(giant_ratio), axis=0, ddof=1)/np.sqrt(n_iter)
 
+    avg_shortest_path_lens, ebar_shortest_path_lens = np.zeros_like(radii), np.zeros_like(radii)
+    avg_geo_dist, ebar_geo_dist = np.zeros_like(radii), np.zeros_like(radii)
+    avg_topolog_dist, ebar_topolog_dist = np.zeros_like(radii), np.zeros_like(radii)
+    for r in range(len(radii)):
+        radius = radii[r]
+        avg_geo_dist[r] = np.average(np.array(dict_of_geo_dist_lists[radius]))
+        ebar_geo_dist[r] = np.std(np.array(dict_of_geo_dist_lists[radius]), ddof=1)/np.sqrt(len(dict_of_geo_dist_lists[radius]))
+        avg_topolog_dist[r] = np.average(np.array(dict_of_avg_topological_dists[radius]))
+        ebar_topolog_dist[r] = np.std(np.array(dict_of_avg_topological_dists[radius]), ddof=1)/np.sqrt(len(dict_of_avg_topological_dists[radius]))
+
     if compute_nw_rates:
         network_rate_avg, network_rate_ebar = np.zeros_like(radii), np.zeros_like(radii)
-        avg_shortest_path_lens, ebar_shortest_path_lens = np.zeros_like(radii), np.zeros_like(radii)
-        avg_geo_dist, ebar_geo_dist = np.zeros_like(radii), np.zeros_like(radii)
-        avg_topolog_dist, ebar_topolog_dist = np.zeros_like(radii), np.zeros_like(radii)
         for r in range(len(radii)):
             radius = radii[r]
             network_rate_avg[r] = np.average(np.array(dict_of_rate_lists_dijkstra[radius]))
-            network_rate_ebar[r] = 2*np.std(np.array(dict_of_rate_lists_dijkstra[radius]), ddof=1)/np.sqrt(len(dict_of_rate_lists_dijkstra[radius]))
+            network_rate_ebar[r] = np.std(np.array(dict_of_rate_lists_dijkstra[radius]), ddof=1)/np.sqrt(len(dict_of_rate_lists_dijkstra[radius]))
             avg_shortest_path_lens[r] = np.average(np.array(dict_of_len_lists_dijkstra[radius]))
-            ebar_shortest_path_lens[r] = 2*np.std(np.array(dict_of_len_lists_dijkstra[radius]), ddof=1)/np.sqrt(n_iter)
-            avg_geo_dist[r] = np.average(np.array(dict_of_geo_dist_lists[radius]))
-            ebar_geo_dist[r] = 2*np.std(np.array(dict_of_geo_dist_lists[radius]), ddof=1)/np.sqrt(len(dict_of_geo_dist_lists[radius]))
-            avg_topolog_dist[r] = np.average(np.array(dict_of_avg_topological_dists[radius]))
-            ebar_topolog_dist[r] = 2*np.std(np.array(dict_of_avg_topological_dists[radius]), ddof=1)/np.sqrt(len(dict_of_avg_topological_dists[radius]))
+            ebar_shortest_path_lens[r] = np.std(np.array(dict_of_len_lists_dijkstra[radius]), ddof=1)/np.sqrt(n_iter)
 
     if qkd == 'CV' or qkd == 'DV':
         suffix = '_N%d' % N
@@ -194,20 +220,20 @@ for N in Ns:
     if compute_nw_rates:
         # KEY RATE + DISTANCE BW NODES
         if keyrate_algo == 'serial':
-            np.savetxt('outputs/out_'+qkd+'_rhos_rate' + suffix + '.dat', np.vstack((rhos, network_rate_avg, network_rate_ebar)) )
-            np.savetxt('outputs/out_'+qkd+'_rhos_aspl_dijk' + suffix + '.dat', np.vstack((rhos, avg_shortest_path_lens, ebar_shortest_path_lens)) )
+            np.savetxt('out_'+qkd+'_rhos_rate' + suffix + '.dat', np.vstack((rhos, network_rate_avg, network_rate_ebar)) )
+            np.savetxt('out_'+qkd+'_rhos_aspl_dijk' + suffix + '.dat', np.vstack((rhos, avg_shortest_path_lens, ebar_shortest_path_lens)) )
         elif keyrate_algo == 'parallel':
-            np.savetxt('outputs/out_'+qkd+'_rhos_parK' + suffix + '.dat', np.vstack((rhos, network_rate_avg, network_rate_ebar)) )
-            np.savetxt('outputs/out_'+qkd+'_rhos_aspl' + suffix + '.dat', np.vstack((rhos, avg_shortest_path_lens, ebar_shortest_path_lens)) )
+            np.savetxt('out_'+qkd+'_rhos_parK' + suffix + '.dat', np.vstack((rhos, network_rate_avg, network_rate_ebar)) )
+            np.savetxt('out_'+qkd+'_rhos_aspl' + suffix + '.dat', np.vstack((rhos, avg_shortest_path_lens, ebar_shortest_path_lens)) )
     # CONNECTIVITY
-    np.savetxt('outputs/out_'+qkd+'_rhos_conn' + suffix + '.dat', np.vstack((rhos,giant_ratio_avg, giant_ratio_ebar)) )
+    np.savetxt('out_'+qkd+'_rhos_conn' + suffix + '.dat', np.vstack((rhos,giant_ratio_avg, giant_ratio_ebar)) )
     # AVERAGE GEODETIC DISTANCE BW NODES
-    np.savetxt('outputs/out_'+qkd+'_rhos_geod' + suffix + '.dat', np.vstack((rhos, avg_geo_dist, ebar_geo_dist)) )
+    np.savetxt('out_'+qkd+'_rhos_geod' + suffix + '.dat', np.vstack((rhos, avg_geo_dist, ebar_geo_dist)) )
     # AVERAGE TOPOLOGICAL DISTANCE BW NODES
-    np.savetxt('outputs/out_'+qkd+'_rhos_topd' + suffix + '.dat', np.vstack((rhos, avg_topolog_dist, ebar_topolog_dist)) )
+    np.savetxt('out_'+qkd+'_rhos_topd' + suffix + '.dat', np.vstack((rhos, avg_topolog_dist, ebar_topolog_dist)) )
     # CLUSTERING COEFFICIENT
     clus_data = np.vstack(( rhos, np.average(np.array(clustering_coeffs), axis=0), 2*np.std(np.array(clustering_coeffs), axis=0, ddof=1)/np.sqrt(n_iter)))
-    np.savetxt('outputs/out_'+qkd+'_rhos_clus' + suffix + '.dat', clus_data)
+    np.savetxt('out_'+qkd+'_rhos_clus' + suffix + '.dat', clus_data)
     # DEGREE DISTRIBUTION
     k_max = max( len(dict_of_avg_degree_distribs[radius].keys()) for radius in radii )
     degree_distr_array = np.zeros((k_max+1, len(rhos)))
@@ -216,7 +242,7 @@ for N in Ns:
         degree_histo = dict_of_avg_degree_distribs[radii[r]]
         for k in degree_histo.keys():
             degree_distr_array[1+k,r] = degree_histo[k]
-    np.savetxt('outputs/out_'+qkd+'_rhos_degr' + suffix + '.dat', degree_distr_array)
+    np.savetxt('out_'+qkd+'_rhos_degr' + suffix + '.dat', degree_distr_array)
 
 
     ########################################## quick plot for immediate feedback ###########################################
@@ -239,10 +265,19 @@ for N in Ns:
     else:
         plt.legend()
     if qkd == 'CV':
-        plt.title(qkd+', N=%d, $\varepsilon_B=$%.2f, ' % (N, eps_B) + ('coords from dMercator' if sample_from_file else 'random coords'))
+        plt.title(qkd+', N=%d, $\\epsilon_B=$%.2f, ' % (N, eps_B) + ('coords from dMercator' if sample_from_file else 'random coords'))
     elif qkd == 'DV':
         plt.title(qkd+', N=%d, QBER=%.2f, $p_{dc}=$%.2E' % (N, state_of_the_art_params.q, p_darkcount))
-    plt.savefig('outputs/out_'+qkd+'_quickplot' + suffix + '.png', dpi=300)
+    plt.savefig('out_'+qkd+'_quickplot' + suffix + '.png', dpi=300)
+
+output_dir = 'outputs'
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+
+if os.path.abspath(output_dir) != os.path.abspath(os.path.join(output_dir, 'outputs')):
+    for filename in os.listdir('.'):
+        if filename.startswith('out') and os.path.isfile(filename):
+            shutil.move(filename, os.path.join(output_dir, filename))
 
 end = time.time()
 print('Execution took %.f seconds.' % (end - start))
