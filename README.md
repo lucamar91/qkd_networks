@@ -17,6 +17,7 @@ These libraries must be installed:
 - time
 - networkX
 - heapq
+- shutil
 
 Two subdirectories should be created in the directory containing the code:
 - outputs/ : the output files of the main code are stored here;
