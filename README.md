@@ -1,4 +1,4 @@
-Modeling and simulation of QKD networks.
+# Software for the modeling and simulation of QKD networks.
 
 ### Code description
 - qkd_networks.py: is the main script. When executed it produces several outputs explained below;
@@ -7,19 +7,14 @@ Modeling and simulation of QKD networks.
 - plots.ipynb: the jupyter notebook used for the generation of the pictures in the paper.
 
 ### Requirements
-- python 3.x
+In addition to standard libraries from Python 3.x, this project requires the following packages:
 
-These libraries must be installed:
-- numpy
-- scipy
-- matplotlib
-- os
-- time
-- networkX
-- heapq
-- shutil
+numpy==1.26.4
+scipy==1.14.0
+matplotlib==3.9.1
+networkx==3.3
 
-Two subdirectories should be created in the directory containing the code:
+### Subdirectories:
 - outputs/ : the output files of the main code are stored here;
 - plots/ : the plots produced in the plots.ipynb notebook are saved here.
 

@@ -115,20 +115,20 @@ def plot_graph_on_sphere(cartesian_coords, adjacency_matrix, R, filename='earth'
     # could be improved, eg R must be the length of the coords vecs so its just messy to input it separately
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
-    # Genera gli array delle coordinate cartesiane
+    # generate cartesian coords arrays
     x = cartesian_coords[:, 0]
     y = cartesian_coords[:, 1]
     z = cartesian_coords[:, 2]
-    # Rappresenta la sfera in trasparenza
+    # represent transparent sphere
     u = np.linspace(0, 2 * np.pi, 100)
     v = np.linspace(0, np.pi, 100)
     x_sphere = R * np.outer(np.cos(u), np.sin(v))
     y_sphere = R * np.outer(np.sin(u), np.sin(v))
     z_sphere = R * np.outer(np.ones(np.size(u)), np.cos(v))
     ax.plot_surface(x_sphere, y_sphere, z_sphere, color='blue', alpha=0.2)
-    # Rappresenta i punti
+    # represent points
     ax.scatter(x, y, z, s=50, color=pt_color)
-    # Rappresenta gli archi come cammini minimi sul grande cerchio
+    # represent paths between points as geodetic curves
     n_points = cartesian_coords.shape[0]
     for i in range(n_points):
         for j in range(i+1, n_points):
@@ -139,13 +139,12 @@ def plot_graph_on_sphere(cartesian_coords, adjacency_matrix, R, filename='earth'
                 y_arc = np.sin(t) * (cartesian_coords[i, 1] / np.sin(phi)) + np.sin(phi - t) * (cartesian_coords[j, 1] / np.sin(phi))
                 z_arc = np.sin(t) * (cartesian_coords[i, 2] / np.sin(phi)) + np.sin(phi - t) * (cartesian_coords[j, 2] / np.sin(phi))
                 ax.plot(x_arc, y_arc, z_arc, color=edge_color, alpha=0.5)
-    # Imposta gli assi in modo che abbiano la stessa scala
+    # require same scale for all axes
     ax.set_xlim([-R, R])
     ax.set_ylim([-R, R])
     ax.set_zlim([-R, R])
     ax.set_box_aspect([1, 1, 1])
     ax.axis('off')
-    # salva il grafico
     #plt.rcParams['figure.figsize'] = [15,15]
     fig.set_size_inches(15,15)
     ax.set_facecolor(bckgrnd_color)
@@ -195,9 +194,8 @@ def dijkstra(W, source): # W is a numpy 2d array: symmetr mtx, Wij is weight of 
                 J[i] = j
     return J, f
 
-# now an alternative algorithm for finding the optimal path, probably more fit to the fact that all nodes in the path produce their keys at the same time:
-# structure (and probably complexity) same as dijkstra, but it returns the paths of edges with the lowest maximum weight. this is done because in a sequence
-# of quantum encryptions the node that dictates the timescale is the lowest. same inputs, outputs as nx.single_source_dijkstra
+# The following is the pathfinding algorithm used for the final results. It finds the paths of edges achieving the lowest time. 
+# Same inputs, outputs as nx.single_source_dijkstra
 def least_maximum_weight_path(graph, source, target=None, weight='weight'):    # ft. chatgpt
     # Initialize data structures
     dist = {node: float('inf') for node in graph.nodes()}
@@ -248,7 +246,7 @@ def visualize_least_maximum_weight_path(graph, source, target=None, weight='weig
     plt.show()
     return
 
-# another visual tool for highlighting k-cores in a network
+# a visual tool for highlighting k-cores in a network
 def visualize_graph_with_k_core(graph, k):
     # Find the k-core subgraph
     k_core_subgraph = nx.k_core(graph, k=k)

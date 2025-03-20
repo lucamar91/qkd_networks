@@ -7,57 +7,52 @@ from qopt_funcs import *
 import networkx as nx
 # import random
 import time
-import shutil    # to copy files at the end of the script (im being lazy)
+import shutil    # to copy files at the end of the script
 
 # WHAT DOES THIS CODE DO? 
-# It generates instances of complex networks (nw) & computes avg rate and connectivity, sweeping node densities BY CHANGING SYSTEM SIZE
-# this version can also simulate a QKD network using a hybrid combination of CV and DV, switching protoc at a dist d_hybrid
-# in this version im going all in w networkx: computing all the shortest paths (all_pairs_dijkstra), not just sampling
-# also im simplifying the computation and storage of the results
+# It generates instances of complex networks (nw), sweeping node densities by changing system size
+# Computed quantities: connectivity, susceptibility, average key rate, average geodetic and topological distances, degree distribution, clustering coeff.
+# The version of the QKD protocol used (CV/DV/hybrid) can be changed through the variable 'd_hybrid' below.
 
-# params are loaded through the exec of a separate file (more manageable):
-compute_nw_rates = False      # if False only connectivity of the network is computed (to reduce the runtime)
+Ns = [100]                    # list of network sizes
+
+rate_min = 0
+n_nodes_for_dijkstra = 20
+compute_nw_rates = False      # if False only connectivity of the network is computed (to reduce runtime)
 edges_may_fail = False        # if True, an edge fails with prob PoF
-PoF = 0.1                     # enters in the network building phase
+PoF = 0.1                     # probability of failure of an edge
 keyrate_algo = 'parallel'     # 'parallel' or 'serial' (dijkstra)
-beta = 2.6261        # beta param of S2 model; for S1 the inferred beta was 1.2437
-mu = 0.0233          # mu param of S2 model; for S1 the inferred mu was 0.0294
-sample_from_file = False    # coordinates are sampled from the results of d-Mercator (there a max number of available nodes!)
+beta = 2.6261                 # \beta param of S2 model
+mu = 0.0233                   # \mu param of S2 model
+sample_from_file = False      # if True, coordinates are sampled from the results of d-Mercator (limits max number of nodes)
+detection_mode = 'homodyne'   # homo-/hetero-dyne
+reconciliation = 'reverse'    # type of reconciliation
 
 ####### The state-of-the-art values for the following params are usually kept fixed and assigned in qopt_funcs.py ##########
 # params for the qkd rates:
-alpha = state_of_the_art_params.alpha           # the exponential decaying factor in T(d); units: dB/km
-freq = state_of_the_art_params.freq           # source repetition rate [Hz]: same for CV and DV
+alpha = state_of_the_art_params.alpha
+freq = state_of_the_art_params.freq
 # CV-specific
-eps_B = state_of_the_art_params.eps_B           # excess noise on Bob's side
-eps_critical = state_of_the_art_params.eps_critical   # approx estimate for critical value for excess noise (see Navascues, Acin)
-eta_source_CV = state_of_the_art_params.eta_source_CV      # (see raja's mail 26th jan) im adding it just for completeness
-eta_det_CV = state_of_the_art_params.eta_det_CV       # detector efficiency (luis: eta ranges from 0.2 to 0.8); would be interesting to sweep it
-detection_mode = 'homodyne'    # homo-/hetero-dyne: one/both quadratures are measured by the party that drives the reconciliation
-reconciliation = 'reverse'     # type of reconciliation
-T_A = state_of_the_art_params.T_A                # homodyne: 1; heterodyne: 0.5
-r_A = state_of_the_art_params.r_A               # squeezing parameter
+eps_B = state_of_the_art_params.eps_B
+eta_source_CV = state_of_the_art_params.eta_source_CV
+eta_det_CV = state_of_the_art_params.eta_det_CV
+T_A = state_of_the_art_params.T_A
+r_A = state_of_the_art_params.r_A
 # DV-specific
-eta_source_DV = state_of_the_art_params.eta_source_DV     # source efficiency
-eta_det_DV = state_of_the_art_params.eta_det_DV           # detector efficiency
-R_dark = state_of_the_art_params.R_dark                   # dark count rate: 100 Hz
-deltat_det = state_of_the_art_params.deltat_det           # time gate duration: 100 ps
-p_darkcount = state_of_the_art_params.p_darkcount         # probability of having a dark count (per pulse)
-q = state_of_the_art_params.q                             # the QBER
+eta_source_DV = state_of_the_art_params.eta_source_DV
+eta_det_DV = state_of_the_art_params.eta_det_DV
+R_dark = state_of_the_art_params.R_dark
+deltat_det = state_of_the_art_params.deltat_det
+p_darkcount = state_of_the_art_params.p_darkcount
+q = state_of_the_art_params.q
 
-# with open('params.py') as fp: exec(fp.read())
-
-# FORCING MANUALLY SOME PARAMETERS (OVERRIDING THE ONES IN params.py)
-Ns = [100]
-rate_min = 0
-n_nodes_for_dijkstra = 20
-
+# Defining the set of node densities to be simulated
 rho_span = '_wide'              # providing some presets of points for the plots: '_focus', '_wide' or anything else
-if rho_span == '_focus':
-    n_iter, n_couples = 40, 10       # lets keep them down, raise them for the final plots
+if rho_span == '_focus':        # for Fig. 1b
+    n_iter, n_couples = 40, 10
     rhos = 0.14*10**np.linspace(-2.3,-1.9,20)
 elif rho_span == '_wide':
-    n_iter, n_couples = 10, 10       # lets keep them down, raise them for the final plots
+    n_iter, n_couples = 10, 10
     rhos = 0.14*10**np.linspace(-4.,1.,50)
 else:
     print('ERROR: variable \'rho_span\' must be \'_focus\' or \'_wide\'.')
@@ -74,14 +69,16 @@ def optimal_path_algo(G, target, algo='serial'):
 # computing critical distances, needed later for pruning (if d_hyb is 0 hybrid_keyrate_bitpersec returns DV rates, if inf it returns CV rates)
 d_max = 1000
 func_CV = lambda dist : hybrid_keyrate_bitpersec(state_of_the_art_params, dist, d_hybrid = float('inf'))
-d_c_CV = bisection_solver(func_CV, 10E-06, d_max)            # not starting from 0 bc if T=1 there a div by 0
+d_c_CV = bisection_solver(func_CV, 10E-06, d_max)            # not starting from 0 bc if T=1 there is a division by 0
 func_DV = lambda dist : hybrid_keyrate_bitpersec(state_of_the_art_params, dist, d_hybrid = 0)
 d_c_DV = bisection_solver(func_DV, 10E-06, d_max)
 diff = lambda d: func_CV(d) - func_DV(d)
 d_cross = bisection_solver(diff, 10E-06, d_max)
 
+# The 'd_hybrid' variable can be changed to any value. Of particular interest are:
+# float('inf') to force CV-only networks, 0 to force DV-only nws, d_cross for 'optimal' hybrid protocol
+d_hybrid = d_cross        
 
-d_hybrid = d_cross                      # float('inf') to force CV-only, 0 to force DV-only, d_cross for 'optimal' hybrid
 if not edges_may_fail:
     PoF = 0.
 
@@ -132,7 +129,7 @@ for N in Ns:
                         dij = radius*Dists[i,j]
                         idx_d = np.argmin( abs(dij-d_set) )
                         h_rate = keyrates[idx_d]
-                        if dij < d_c_DV and h_rate > rate_min:    # the transition CV/DV can cause problems, im double-checking
+                        if dij < d_c_DV and h_rate > rate_min:    # the transition CV/DV can cause problems, double-checking here
                             if np.random.uniform() > PoF * int(edges_may_fail):  # ie if edge doesnt fail (uniform returns 0<x<1 by default)
                                 W[i,j] = W[j,i] = h_rate**-1
                                 A_pruned[i,j] = A_pruned[j,i] = 1
@@ -184,7 +181,7 @@ for N in Ns:
         clustering_coeffs[it] = np.array(clustering_list)
 
 
-    # saving avg's and errorbars:    ebar = 2*sigma/sqrt(N)  -->  stdev of the mean
+    # saving average values and error bars
     giant_ratio_avg = np.average(np.array(giant_ratio), axis=0)
     giant_ratio_ebar = 2*np.std(np.array(giant_ratio), axis=0, ddof=1)/np.sqrt(n_iter)
 

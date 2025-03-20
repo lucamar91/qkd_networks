@@ -38,7 +38,7 @@ def g(x):     # following notation in (W) ; different notations in other papers 
         print('Error: symplectic eigvals are always >= 1.')
         return None
 
-def binary_entropy(x):    # often called h(x) , but again notation is not unanimous (h(x) may identify g(x) defined above)
+def binary_entropy(x):    # often called h(x), but again notation is not unanimous (h(x) may identify g(x) defined above)
     if np.isclose(x,0) or np.isclose(x,1):
         return 0
     elif 0<=x<=1:
@@ -54,7 +54,7 @@ def rE_noisy(T, eps):                 # (T)
     return np.arccosh(1+eps*T/(1-T))
 
 def conditional_cov_mtx(V, detection_mode = 'homodyne'):
-    # Schur's complement: V = covariance matrix of Alice and Bob's states. reference for theory: Weedbrock etal "Gaussian quantum info"
+    # Schur's complement: V = covariance matrix of Alice and Bob's states. reference for theory: (W); Pirandola etal, ""
     # A is the a priori covariance matrix of the party who decides the quadrature (ie the one who measures): Alice if direct, Bob if reverse
     A = V[0:2, 0:2]
     B = V[2:4, 2:4]
@@ -100,14 +100,14 @@ def CV_keyrate(r_A, T, eps, detection_mode='homodyne', reconciliation='reverse')
     elif reconciliation == 'reverse':
         ixs = ixs_dict['Bob'] + ixs_dict['Alice']
     ixgrid = np.ix_(ixs, ixs)
-    sigma_AB = cov_final[ixgrid]    # at this point A = Alice/Bob depending if reconciliation is direct/reverse
+    sigma_AB = cov_final[ixgrid]    # at this point A = either Alice or Bob depending if reconciliation is direct or reverse respectively
     sigma_AB_beta = conditional_cov_mtx(sigma_AB, detection_mode=detection_mode)
     info_AB = mutual_information(sigma_AB, sigma_AB_beta)
     key_rate = info_AB - holevo_bound(sigma_AB) + holevo_bound(sigma_AB_beta)
     return np.real( key_rate )
 
 def bisection_solver(f, x1, x2, rel_tol=0.000001):
-    # a basic bisection algo: it works properly with pieces of functions that have a single zero in the (x1,x2) interval
+    # basic bisection algo: it works properly with pieces of functions that have a single zero in the (x1,x2) interval
     y1 = f(x1)
     y2 = f(x2)
     while np.abs(x2-x1) > rel_tol*x1:
@@ -128,7 +128,7 @@ def DV_keyrate(q, p_signal, p_darkcount):           # number of bits per pulse d
     q_tilde = (0.5*p_darkcount + p_signal*q)/(p_signal + p_darkcount)
     return 1 - 2 * binary_entropy(q_tilde)
 
-def hybrid_keyrate_bitpersec(pars, d, d_hybrid):           # in bit/s! assuming homodyne detection and reverse reconciliation
+def hybrid_keyrate_bitpersec(pars, d, d_hybrid):    # in bit/s! assuming homodyne detection and reverse reconciliation
     T = transmittance_v_distance(d)
     if d <= d_hybrid:   # use CV
         eps_A = pars.eps_B/pars.eta_det_CV/T
@@ -142,42 +142,41 @@ def hybrid_keyrate_bitpersec(pars, d, d_hybrid):           # in bit/s! assuming 
 
 class param_set(object):
     def __init__(self):
-        self.alpha = None          # the exponential decaying factor in T(d); units: dB/km
+        self.alpha = None          # the exponential decaying factor in T(d) [dB/km]
         self.freq = None           # source repetition rate [Hz]: same for CV and DV
         # CV-specific
-        self.eps_B = None          # excess noise on Bob's side
+        self.eps_B = None          # excess noise on Bob's side [SNU] (Shot Noise Units)
         self.eps_critical = None   # approx estimate for critical value for excess noise (see Navascues, Acin)
-        self.eta_source_CV = None  # (see raja's mail 26th jan) im adding it just for completeness
+        self.eta_source_CV = None  # source efficiency, added for completeness, always set to 1
         self.eta_det_CV = None     # detector efficiency
-        self.T_A = None            # homodyne: 1; heterodyne: 0.5
-        self.r_A = None            # squeezing parameter (numerically gives results pretty close to r_A=\infty approx)
+        self.T_A = None            # homodyne detection: T_A=1; heterodyne det.: T_A=0.5
+        self.r_A = None            # squeezing parameter (must be less than 10 approx. to avoid numerical errors)
         # DV-specific
         self.q = None              # the QBER
         self.eta_source_DV = None  # source efficiency
         self.eta_det_DV = None     # detector efficiency
-        self.R_dark = None         # dark count rate: 100 Hz
-        self.deltat_det = None     # time gate duration: 100 ps
+        self.R_dark = None         # dark count rate [Hz]
+        self.deltat_det = None     # time gate duration: [s]
         self.p_darkcount = None    # probability of having a dark count (per pulse)
 
     def crossover_distance(self):  # to find the crossover distance beyond which CV rate > DV rate
         f = lambda d: hybrid_keyrate_bitpersec(state_of_the_art_params, d, 0) - hybrid_keyrate_bitpersec(state_of_the_art_params, d, 1000)
         return bisection_solver(f, 0.001, 1000)
 
-
+# Values from table I
 state_of_the_art_params = param_set()
-state_of_the_art_params.alpha = 0.18          # the exponential decaying factor in T(d); units: dB/km
-state_of_the_art_params.freq = 1E9          # source repetition rate [Hz]: same for CV and DV (source: meeting w Luis)
+state_of_the_art_params.alpha = 0.18
+state_of_the_art_params.freq = 1E9
 # CV-specific
-state_of_the_art_params.eps_B = 0.005          # excess noise on Bob's side ### VALUE UPDATED FROM 0.1
-state_of_the_art_params.eps_critical = 0.75   # approx estimate for critical value for excess noise (see Navascues, Acin)
-state_of_the_art_params.eta_source_CV = 1     # (see raja's mail 26th jan) im adding it just for completeness
-state_of_the_art_params.eta_det_CV = 0.8      # detector efficiency (luis: eta ranges from 0.2 to 0.8); would be interesting to sweep it
-state_of_the_art_params.T_A = 1               # homodyne: 1; heterodyne: 0.5
-state_of_the_art_params.r_A = 10              # squeezing parameter (numerically gives results pretty close to r_A=\infty approx)
+state_of_the_art_params.eps_B = 0.005
+state_of_the_art_params.eta_source_CV = 1
+state_of_the_art_params.eta_det_CV = 0.8
+state_of_the_art_params.T_A = 1
+state_of_the_art_params.r_A = 10
 # DV-specific
-state_of_the_art_params.q = 0.01                       # the QBER
-state_of_the_art_params.eta_source_DV = 0.1            # source efficiency
-state_of_the_art_params.eta_det_DV = 0.95              # detector efficiency
-state_of_the_art_params.R_dark = 100                   # dark count rate: 100 Hz
-state_of_the_art_params.deltat_det = 100.E-12          # time gate duration: 100 ps
-state_of_the_art_params.p_darkcount = state_of_the_art_params.R_dark*state_of_the_art_params.deltat_det    # probability of having a dark count (per pulse)
+state_of_the_art_params.q = 0.01
+state_of_the_art_params.eta_source_DV = 0.1
+state_of_the_art_params.eta_det_DV = 0.95
+state_of_the_art_params.R_dark = 100
+state_of_the_art_params.deltat_det = 100.E-12
+state_of_the_art_params.p_darkcount = state_of_the_art_params.R_dark*state_of_the_art_params.deltat_det
