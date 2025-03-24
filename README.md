@@ -4,7 +4,8 @@
 - qkd_networks.py: is the main script. When executed it produces several outputs explained below;
 - network_funcs.py: contains all the user-defined functions to generate, handle and visualize instances of the ${S}^2$ network model;
 - q_opt_funcs.py: contains the functions needed to compute the key rate bounds for Continuous-Variable QKD and for the BB84 protocol (DVQKD);
-- plots.ipynb: the jupyter notebook used for the generation of the pictures in the paper.
+- plots.ipynb: the jupyter notebook used for the generation of the pictures in the paper "Quantum Key Distribution over Complex Networks" (Luca Mariani, Raja Yehia, Carlos Pascual-García, Federico Centrone,
+Jasper van der Kolk, M. Ángeles Serrano, and Antonio Acín).
 
 ### Requirements
 In addition to standard libraries from Python 3.x, this project requires the following packages:
