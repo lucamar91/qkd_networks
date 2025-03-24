@@ -9,10 +9,10 @@
 ### Requirements
 In addition to standard libraries from Python 3.x, this project requires the following packages:
 
-numpy==1.26.4
-scipy==1.14.0
-matplotlib==3.9.1
-networkx==3.3
+- numpy==1.26.4
+- scipy==1.14.0
+- matplotlib==3.9.1
+- networkx==3.3
 
 ### Subdirectories:
 - outputs/ : the output files of the main code are stored here;
