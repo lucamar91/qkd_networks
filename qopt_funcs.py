@@ -29,15 +29,13 @@ def apply_symplectic_transform(S, cov):
 def squeezed_cov(param):
     return apply_symplectic_transform(squeeze_symplectic(param), cov_vacuum)
 
-def g(x):     # following notation in (W) ; different notations in other papers (eg: Pirandola; Eisert, Holevo1999)
-    if x>1:
-        return (x+1)/2 * np.log2((x+1)/2) - (x-1)/2 * np.log2((x-1)/2)
-    elif np.isclose(x,1,rtol=1e-03):
-        return 0
-    else:
-        print('Error: symplectic eigvals are always >= 1.')
-        return None
-
+def g(x, atol=1e-03):     # following notation in (W) ; different notations in other papers (eg: Pirandola; Eisert, Holevo1999)
+    mask_close_to_1 = np.isclose(x, 1, atol=atol)
+    x = np.where(mask_close_to_1, 1, x)    # to avoid numerical errors when x is close to 1 (g(1) is defined to be 0)
+    if np.any(x < 1 - atol):
+        raise ValueError(f"Unphysical (less than 1) symplectic eigenvalues detected: min = {x.min()}")
+    return (x+1)/2 * np.log2((x+1)/2) - (x-1)/2 * np.log2((x-1)/2)
+    
 def binary_entropy(x):    # often called h(x), but again notation is not unanimous (h(x) may identify g(x) defined above)
     if np.isclose(x,0) or np.isclose(x,1):
         return 0
