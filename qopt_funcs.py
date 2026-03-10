@@ -11,7 +11,7 @@ I2 = np.array([[1,0],[0,1]])     # identity
 om = np.array([[0,1],[-1,0]])    # symplectic form
 Pi_q = np.array([[1,0],[0,0]])   # projector over q
 
-T_A_dict = {'homodyne': 1, 'heterodyne': 0.5}
+T_A_dict = {'homodyne': 1, 'heterodyne': 0.5}    # Alice's measures in EB scheme. Corresponds to squeezed/coherent state P&M protocols respectively. change strings accordingly?
 ixs_dict = {'Alice': [0,1], 'Bob': [2,3]}
 
 cov_vacuum = block_diag(I2,I2)
@@ -59,13 +59,24 @@ def conditional_cov_mtx(V, detection_mode = 'homodyne'):
     C = V[0:2, 2:4]
     if detection_mode == 'homodyne':
         pseu_inv = LA.pinv( LA.multi_dot([Pi_q, A, Pi_q]) )
+    elif detection_mode == 'heterodyne':
+        pseu_inv = LA.pinv( A + I2 )    # WARNING: T=1 breaks the SVD in the pseudoinverse
+    else:
+        raise ValueError("Invalid detection mode. Expected 'homodyne' or 'heterodyne'.")
     return B - LA.multi_dot([C, pseu_inv, C.T])      # the returned mtx is the conditional cov. matrix of the other party
 
-def mutual_information(V, Vb_alpha):    # V --> full 4x4 cov. mtx ;  Vb_alpha --> 2x2 conditional cov. mtx of Bob
+def mutual_information(V, Vb_alpha, detection_mode='homodyne'):    # V --> full 4x4 cov. mtx ;  Vb_alpha --> 2x2 conditional cov. mtx of Bob
     B = V[2:4, 2:4]                     # 1st 2 cols --> prepare party; 2nd 2 cols --> measure party
-    first_term = B[0,0]/Vb_alpha[0,0]
-    second_term = B[1,1]/Vb_alpha[1,1]
-    return 0.5 * ( np.log2(first_term) + np.log2(second_term) )
+    if detection_mode=='homodyne':
+        first_term = B[0,0]/Vb_alpha[0,0]
+        second_term = B[1,1]/Vb_alpha[1,1]
+        return 0.5 * ( np.log2(first_term) + np.log2(second_term) )
+    elif detection_mode=='heterodyne':
+        first_term = (B[0,0] + 1)/(Vb_alpha[0,0] + 1)
+        second_term = (B[1,1] + 1)/(Vb_alpha[1,1] + 1)
+        return 0.5 * ( np.log2(first_term) + np.log2(second_term) )
+    else:
+        raise ValueError("Invalid detection mode. Expected 'homodyne' or 'heterodyne'.")
 
 def holevo_bound(gamma):
     if gamma.shape[0]==4:
@@ -83,15 +94,15 @@ def entangling_cloner_covariance_mtx(r_E, r_A, T, T_A):
     cov_sq = squeezed_cov(r_A/2)
     cov_sq_w_vac = block_diag(I2, cov_sq)
     S_bsA = block_diag(beamspl_symplectic(T_A),I2)
-    cov_sq_bs = apply_symplectic_transform(S_bsA,cov_sq_w_vac)[2:,2:]  # removing the vacuum mode
+    cov_sq_bs = apply_symplectic_transform(S_bsA, cov_sq_w_vac)[2:,2:]  # removing the vacuum mode
     cov_w_Eve = block_diag(cov_sq_bs, squeezed_cov(r_E/2))
     S_bsE = block_diag(I2, beamspl_symplectic(T), I2)
     cov_final = apply_symplectic_transform(S_bsE, cov_w_Eve)
     return cov_final
 
-def CV_keyrate(r_A, T, eps, detection_mode='homodyne', reconciliation='reverse'):
+def CV_keyrate(r_A, T, eps, alice_detection_mode = 'homodyne', detection_mode='homodyne', reconciliation='reverse'):
     r_E = rE_noisy(T, eps)
-    T_A = T_A_dict[detection_mode]
+    T_A = T_A_dict[alice_detection_mode]
     cov_final = entangling_cloner_covariance_mtx(r_E, r_A, T, T_A)
     if reconciliation == 'direct':
         ixs = ixs_dict['Alice'] + ixs_dict['Bob']
@@ -100,7 +111,7 @@ def CV_keyrate(r_A, T, eps, detection_mode='homodyne', reconciliation='reverse')
     ixgrid = np.ix_(ixs, ixs)
     sigma_AB = cov_final[ixgrid]    # at this point A = either Alice or Bob depending if reconciliation is direct or reverse respectively
     sigma_AB_beta = conditional_cov_mtx(sigma_AB, detection_mode=detection_mode)
-    info_AB = mutual_information(sigma_AB, sigma_AB_beta)
+    info_AB = mutual_information(sigma_AB, sigma_AB_beta, detection_mode=detection_mode)
     key_rate = info_AB - holevo_bound(sigma_AB) + holevo_bound(sigma_AB_beta)
     return np.real( key_rate )
 
