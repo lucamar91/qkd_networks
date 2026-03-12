@@ -265,3 +265,12 @@ def visualize_graph_with_k_core(graph, k):
     plt.axis('equal')
     plt.show()
 
+
+def optimal_quantum_repeater_path(Probs_mtx, P_Bell, source, target=None): # structured like nx.single_source_dijkstra
+    W = np.log2(Probs_mtx) + np.log2(P_Bell)
+    G = nx.from_numpy_array(W)
+    weights, paths = nx.single_source_dijkstra(G, source, target, weight='weight')
+    weights = np.exp(weights - np.log2(P_Bell))   # to avoid overcounting the Bell state success probability 
+    return weights, paths
+
+
