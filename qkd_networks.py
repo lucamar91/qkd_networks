@@ -67,7 +67,7 @@ def optimal_path_algo(G, target, algo='serial'):
         return
 
 # computing critical distances, needed later for pruning (if d_hyb is 0 hybrid_keyrate_bitpersec returns DV rates, if inf it returns CV rates)
-d_max = 1000
+d_max = 1000    # for no particular reason other than setting a very high starting point for the bisection algo, to be sure to find the zero ie the critical distance
 func_CV = lambda dist : hybrid_keyrate_bitpersec(state_of_the_art_params, dist, d_hybrid = float('inf'))
 d_c_CV = bisection_solver(func_CV, 10E-06, d_max)            # not starting from 0 bc if T=1 there is a division by 0
 func_DV = lambda dist : hybrid_keyrate_bitpersec(state_of_the_art_params, dist, d_hybrid = 0)
