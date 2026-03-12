@@ -60,13 +60,13 @@ def conditional_cov_mtx(V, detection_mode = 'homodyne'):
     if detection_mode == 'homodyne':
         pseu_inv = LA.pinv( LA.multi_dot([Pi_q, A, Pi_q]) )
     elif detection_mode == 'heterodyne':
-        pseu_inv = LA.pinv( A + I2 )    # WARNING: T=1 breaks the SVD in the pseudoinverse
+        pseu_inv = LA.inv( A + I2 )    # WARNING: T=1 breaks the SVD in the pseudoinverse
     else:
         raise ValueError("Invalid detection mode. Expected 'homodyne' or 'heterodyne'.")
     return B - LA.multi_dot([C, pseu_inv, C.T])      # the returned mtx is the conditional cov. matrix of the other party
 
 def mutual_information(V, Vb_alpha, detection_mode='homodyne'):    # V --> full 4x4 cov. mtx ;  Vb_alpha --> 2x2 conditional cov. mtx of Bob
-    B = V[2:4, 2:4]                     # 1st 2 cols --> prepare party; 2nd 2 cols --> measure party
+    B = V[2:4, 2:4]                     # A shares info about the measurements, B adapts its key accordingly
     if detection_mode=='homodyne':
         first_term = B[0,0]/Vb_alpha[0,0]
         second_term = B[1,1]/Vb_alpha[1,1]
@@ -74,9 +74,22 @@ def mutual_information(V, Vb_alpha, detection_mode='homodyne'):    # V --> full 
     elif detection_mode=='heterodyne':
         first_term = (B[0,0] + 1)/(Vb_alpha[0,0] + 1)
         second_term = (B[1,1] + 1)/(Vb_alpha[1,1] + 1)
-        return 0.5 * ( np.log2(first_term) + np.log2(second_term) )
+        return np.log2(first_term) + np.log2(second_term)
     else:
         raise ValueError("Invalid detection mode. Expected 'homodyne' or 'heterodyne'.")
+    
+
+def mutual_information_zhang(V, T, epsilon, detection_mode='homodyne'):
+    chi_line = (1 - T) / T + epsilon
+    if detection_mode == 'homodyne':
+        chi_tot = chi_line
+        I_AB = 0.5 * np.log2((V + chi_tot) / (1 + chi_tot))
+    elif detection_mode == 'heterodyne':
+        chi_tot = chi_line + 1
+        I_AB = np.log2((T*(V + chi_tot) + 1) / (T*(1 + chi_tot) + 1))
+    else:
+        raise ValueError("Invalid detection mode.")
+    return I_AB
 
 def holevo_bound(gamma):
     if gamma.shape[0]==4:
@@ -89,6 +102,19 @@ def holevo_bound(gamma):
     symplectic_eigvals = LA.eigvals( 1j * np.dot(Omega, gamma) )
     g_nus = [g(np.real(nu)) for nu in symplectic_eigvals if np.real(nu) > 0]  # np.real to discard infinitesimal imag. parts, >0 to select positive eigvals
     return sum(g_nus)
+
+# def holevo_bound(gamma, reconciliation):   # assume gamma is the cov mtx of both quadratures of Alice and Bob (in this order)
+
+#     if gamma.shape[0]==4:
+#         Omega = block_diag(om, om)
+#     elif gamma.shape[0]==2:
+#         Omega = om
+#     else:
+#         print('Error: input expected to be 2x2 or 4x4 array.')
+#         return
+#     symplectic_eigvals = LA.eigvals( 1j * np.dot(Omega, gamma) )
+#     g_nus = [g(np.real(nu)) for nu in symplectic_eigvals if np.real(nu) > 0]  # np.real to discard infinitesimal imag. parts, >0 to select positive eigvals
+#     return sum(g_nus)
 
 def entangling_cloner_covariance_mtx(r_E, r_A, T, T_A):
     cov_sq = squeezed_cov(r_A/2)
@@ -112,7 +138,10 @@ def CV_keyrate(r_A, T, eps, alice_detection_mode = 'homodyne', detection_mode='h
     sigma_AB = cov_final[ixgrid]    # at this point A = either Alice or Bob depending if reconciliation is direct or reverse respectively
     sigma_AB_beta = conditional_cov_mtx(sigma_AB, detection_mode=detection_mode)
     info_AB = mutual_information(sigma_AB, sigma_AB_beta, detection_mode=detection_mode)
-    key_rate = info_AB - holevo_bound(sigma_AB) + holevo_bound(sigma_AB_beta)
+    # info_AB = mutual_information_zhang(sigma_AB[0,0], T, eps, detection_mode=detection_mode) ###################################
+
+    key_rate = info_AB - holevo_bound(sigma_AB) + holevo_bound(sigma_AB_beta)   # works but the name of the function is misleading
+    # key_rate = info_AB - holevo_bound(sigma_AB, reconciliation)
     return np.real( key_rate )
 
 def bisection_solver(f, x1, x2, rel_tol=0.000001):
