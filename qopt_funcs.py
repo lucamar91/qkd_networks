@@ -12,7 +12,7 @@ om = np.array([[0,1],[-1,0]])    # symplectic form
 Pi_q = np.array([[1,0],[0,0]])   # projector over q
 
 T_A_dict = {'homodyne': 1, 'heterodyne': 0.5}    # Alice's measures in EB scheme. Corresponds to squeezed/coherent state P&M protocols respectively. change strings accordingly?
-ixs_dict = {'Alice': [0,1], 'Bob': [2,3]}
+ixs_dict = {'Alice': [0,1], 'Bob': [2,3]}           # DO WE REALLY NEED THIS
 
 cov_vacuum = block_diag(I2,I2)
 Omega = block_diag(om, om)
@@ -51,21 +51,29 @@ def transmittance_v_distance(d):
 def rE_noisy(T, eps):                 # (T)
     return np.arccosh(1+eps*T/(1-T))
 
-def conditional_cov_mtx(V, detection_mode = 'homodyne'):
+def conditional_cov_mtx(cov_mtx, detection_mode = 'homodyne', reconciliation = 'reverse'):
     # Schur's complement: V = covariance matrix of Alice and Bob's states. reference for theory: (W); Pirandola etal, ""
-    # A is the a priori covariance matrix of the party who decides the quadrature (ie the one who measures): Alice if direct, Bob if reverse
-    A = V[0:2, 0:2]
-    B = V[2:4, 2:4]
-    C = V[0:2, 2:4]
+    A, B, C = cov_mtx[:2,:2], cov_mtx[2:,2:], cov_mtx[:2,2:]
+
+    # X is the a priori cov. mtx of the party sharing the measurement outcomes: Alice if direct reconciliation, Bob if reverse. Y refers to the other party
+    if reconciliation == 'direct':
+        X, Y = A, B
+    elif reconciliation == 'reverse':
+        X, Y = B, A
+        C = C.T    # following from the "swap" between Alice and Bob (actually C is often symmetric)
+    else:
+        raise ValueError("Invalid detection mode. Expected 'direct' or 'reverse'.")
+    
     if detection_mode == 'homodyne':
-        pseu_inv = LA.pinv( LA.multi_dot([Pi_q, A, Pi_q]) )
+        pseu_inv = LA.pinv( LA.multi_dot([Pi_q, X, Pi_q]) )
     elif detection_mode == 'heterodyne':
-        pseu_inv = LA.inv( A + I2 )    # WARNING: T=1 breaks the SVD in the pseudoinverse
+        pseu_inv = LA.inv( X + I2 )    # WARNING: T=1 breaks the SVD in the pseudoinverse
     else:
         raise ValueError("Invalid detection mode. Expected 'homodyne' or 'heterodyne'.")
-    return B - LA.multi_dot([C, pseu_inv, C.T])      # the returned mtx is the conditional cov. matrix of the other party
+    return Y - LA.multi_dot([C, pseu_inv, C.T])      # the returned mtx is the conditional cov. matrix of the other party
 
 def mutual_information(V, Vb_alpha, detection_mode='homodyne'):    # V --> full 4x4 cov. mtx ;  Vb_alpha --> 2x2 conditional cov. mtx of Bob
+    # ANCHE QUI,CAMBIARE NOMI, CHE SI RIFERISCONO A SIMBOLI PER CASO DIRECT REC
     B = V[2:4, 2:4]                     # A shares info about the measurements, B adapts its key accordingly
     if detection_mode=='homodyne':
         first_term = B[0,0]/Vb_alpha[0,0]
@@ -91,30 +99,17 @@ def mutual_information_zhang(V, T, epsilon, detection_mode='homodyne'):
         raise ValueError("Invalid detection mode.")
     return I_AB
 
-def holevo_bound(gamma):
+def symplectic_eigvals(gamma):
+    # we will only diagonalize 2x2 or 4x4 cov. mtxs, so we'll only be considering those cases
     if gamma.shape[0]==4:
         Omega = block_diag(om, om)
     elif gamma.shape[0]==2:
         Omega = om
     else:
-        print('Error: input expected to be 2x2 or 4x4 array.')
-        return
-    symplectic_eigvals = LA.eigvals( 1j * np.dot(Omega, gamma) )
-    g_nus = [g(np.real(nu)) for nu in symplectic_eigvals if np.real(nu) > 0]  # np.real to discard infinitesimal imag. parts, >0 to select positive eigvals
-    return sum(g_nus)
-
-# def holevo_bound(gamma, reconciliation):   # assume gamma is the cov mtx of both quadratures of Alice and Bob (in this order)
-
-#     if gamma.shape[0]==4:
-#         Omega = block_diag(om, om)
-#     elif gamma.shape[0]==2:
-#         Omega = om
-#     else:
-#         print('Error: input expected to be 2x2 or 4x4 array.')
-#         return
-#     symplectic_eigvals = LA.eigvals( 1j * np.dot(Omega, gamma) )
-#     g_nus = [g(np.real(nu)) for nu in symplectic_eigvals if np.real(nu) > 0]  # np.real to discard infinitesimal imag. parts, >0 to select positive eigvals
-#     return sum(g_nus)
+        raise ValueError("Error: input expected to be 2x2 or 4x4 array.")   
+    # assuming i Omega gamma to be Hermitian as it should be --> LA.eigvalsh (more numerically stable)
+    symplectic_eigvals = [np.real(nu) for nu in LA.eigvalsh( 1j * np.dot(Omega, gamma) ) if np.real(nu) > 0] # np.real to discard infinitesimal imag. parts, >0 to select positive eigvals
+    return symplectic_eigvals
 
 def entangling_cloner_covariance_mtx(r_E, r_A, T, T_A):
     cov_sq = squeezed_cov(r_A/2)
@@ -130,18 +125,19 @@ def CV_keyrate(r_A, T, eps, alice_detection_mode = 'homodyne', detection_mode='h
     r_E = rE_noisy(T, eps)
     T_A = T_A_dict[alice_detection_mode]
     cov_final = entangling_cloner_covariance_mtx(r_E, r_A, T, T_A)
-    if reconciliation == 'direct':
-        ixs = ixs_dict['Alice'] + ixs_dict['Bob']
-    elif reconciliation == 'reverse':
-        ixs = ixs_dict['Bob'] + ixs_dict['Alice']
-    ixgrid = np.ix_(ixs, ixs)
-    sigma_AB = cov_final[ixgrid]    # at this point A = either Alice or Bob depending if reconciliation is direct or reverse respectively
-    sigma_AB_beta = conditional_cov_mtx(sigma_AB, detection_mode=detection_mode)
-    info_AB = mutual_information(sigma_AB, sigma_AB_beta, detection_mode=detection_mode)
-    # info_AB = mutual_information_zhang(sigma_AB[0,0], T, eps, detection_mode=detection_mode) ###################################
+    sigma_AB = cov_final[:4, :4]    # selecting only Alice and Bob's modes (in this order) from the final covariance matrix of the whole system (Alice, Bob, Eve)
+    sigma_AB_cond = conditional_cov_mtx(sigma_AB, detection_mode=detection_mode, reconciliation=reconciliation)
+    I_AB = mutual_information(sigma_AB, sigma_AB_cond, detection_mode=detection_mode)
+    # I_AB = mutual_information_zhang(sigma_AB[0,0], T, eps, detection_mode=detection_mode) ###################################
 
-    key_rate = info_AB - holevo_bound(sigma_AB) + holevo_bound(sigma_AB_beta)   # works but the name of the function is misleading
-    # key_rate = info_AB - holevo_bound(sigma_AB, reconciliation)
+    nus_12 = symplectic_eigvals(sigma_AB)
+    S_E = np.sum(np.array([g(nu) for nu in nus_12]))       # Eve's entropy before the measurement
+    nu_prime = symplectic_eigvals(sigma_AB_cond)
+    S_E_cond = np.sum(np.array([g(nu) for nu in nu_prime])) # Eve's entropy after the measurement 
+    holevo_bound = S_E - S_E_cond
+    
+    key_rate = I_AB - holevo_bound
+    # PRINT QUI PER FARE CHECK 
     return np.real( key_rate )
 
 def bisection_solver(f, x1, x2, rel_tol=0.000001):
