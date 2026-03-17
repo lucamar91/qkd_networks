@@ -1,5 +1,10 @@
 # Software for the modeling and simulation of QKD networks.
 
+The software associated with the paper "Quantum Key Distribution over Complex Networks" is available in the branch:
+https://github.com/lucamar91/qkd_networks/tree/v1.0-CvqkdOverComplexNetworks_MY25
+
+The version in the main branch is currently under development and may produce errors.
+
 ### Code description
 - qkd_networks.py: is the main script. When executed it produces several outputs explained below;
 - network_funcs.py: contains all the user-defined functions to generate, handle and visualize instances of the ${S}^2$ network model;
