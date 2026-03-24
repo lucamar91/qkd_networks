@@ -17,11 +17,11 @@ ixs_dict = {'Alice': [0,1], 'Bob': [2,3]}           # DO WE REALLY NEED THIS
 cov_vacuum = block_diag(I2,I2)
 Omega = block_diag(om, om)
 
-def squeeze_symplectic(param):
+def squeeze_symplectic(param):     # this is correct according to convention in (T-->V=cosh r), but it's not the sympl transform a name suggests: it's the TMSS cov mtx
     return np.block([[np.dot(np.cosh(param), I2), np.dot(np.sinh(param), Z)], [np.dot(np.sinh(param), Z), np.dot(np.cosh(param), I2)]])
 
-def beamspl_symplectic(transm):   # np.kron returns tensor product
-    return np.kron(np.array([[np.sqrt(transm), np.sqrt(1-transm)], [np.sqrt(1-transm), np.sqrt(transm)]]), I2) 
+def beamspl_symplectic(transm):   # now THIS is a simplectic transform
+    return np.kron(np.array([[np.sqrt(transm), np.sqrt(1-transm)], [np.sqrt(1-transm), np.sqrt(transm)]]), I2) # np.kron returns tensor product
 
 def apply_symplectic_transform(S, cov):
     return LA.multi_dot([S,cov,S.T])
@@ -29,13 +29,23 @@ def apply_symplectic_transform(S, cov):
 def squeezed_cov(param):
     return apply_symplectic_transform(squeeze_symplectic(param), cov_vacuum)
 
-def g(x, atol=1e-03):     # following notation in (W) ; different notations in other papers (eg: Pirandola; Eisert, Holevo1999)
-    mask_close_to_1 = np.isclose(x, 1, atol=atol)
-    x = np.where(mask_close_to_1, 1, x)    # to avoid numerical errors when x is close to 1 (g(1) is defined to be 0)
-    if np.any(x < 1 - atol):
-        raise ValueError(f"Unphysical (less than 1) symplectic eigenvalues detected: min = {x.min()}")
-    return (x+1)/2 * np.log2((x+1)/2) - (x-1)/2 * np.log2((x-1)/2)
-    
+def g(xs, atol=1e-04):     # following notation in (W) ; different notations in other papers (eg: Pirandola; Eisert, Holevo1999)
+    # to allow vector inputs but also return outputs with the same (scalar or array) type as the input
+    is_scalar = np.isscalar(xs, dtype=float)     # BUT float casting otherwise int inputs --> truncated results
+    if is_scalar:
+        xs = np.array([xs]) 
+    xs = np.asarray(xs)
+    gs = np.zeros_like(xs)
+    # now to manage possible (small) numerical errors:
+    for i, x in enumerate(xs):
+        if x < 1 - atol:        # if symplectic eigvals are less than 1 outside a certain small tolerance for numerical errors, raise an error 
+            raise ValueError(f"Unphysical (less than 1 with tolerance {atol}) symplectic eigenvalue detected: nu = {x.min()}.")
+        elif x < 1 + atol:      # if symplectic eigvals are close to 1 within the small tolerance, set them to the limit of g(x) for x--> 1 = 0
+            gs[i] = 0
+        else:                   # otherwise, usual formula for VN entropy of thermal states
+            gs[i] = (x+1)/2. * np.log2((x+1)/2.) - (x-1)/2. * np.log2((x-1)/2.)
+    return gs[0] if is_scalar else gs
+
 def binary_entropy(x):    # often called h(x), but again notation is not unanimous (h(x) may identify g(x) defined above)
     if np.isclose(x,0) or np.isclose(x,1):
         return 0
@@ -47,9 +57,6 @@ def binary_entropy(x):    # often called h(x), but again notation is not unanimo
 def transmittance_v_distance(d):
     alpha = state_of_the_art_params.alpha
     return 10**(-alpha/10 * d)    # 1/10 factor in the exponent due to dB def: https://en.wikipedia.org/wiki/Decibel
-
-def rE_noisy(T, eps):                 # (T)
-    return np.arccosh(1+eps*T/(1-T))
 
 def conditional_cov_mtx(cov_mtx, detection_mode = 'homodyne', reconciliation = 'reverse'):
     # Schur's complement: V = covariance matrix of Alice and Bob's states. reference for theory: (W); Pirandola etal, ""
@@ -85,7 +92,6 @@ def mutual_information(V, Vb_alpha, detection_mode='homodyne'):    # V --> full 
         return np.log2(first_term) + np.log2(second_term)
     else:
         raise ValueError("Invalid detection mode. Expected 'homodyne' or 'heterodyne'.")
-    
 
 def mutual_information_zhang(V, T, epsilon, detection_mode='homodyne'):
     chi_line = (1 - T) / T + epsilon
@@ -111,7 +117,11 @@ def symplectic_eigvals(gamma):
     symplectic_eigvals = [np.real(nu) for nu in LA.eigvalsh( 1j * np.dot(Omega, gamma) ) if np.real(nu) > 0] # np.real to discard infinitesimal imag. parts, >0 to select positive eigvals
     return symplectic_eigvals
 
-def entangling_cloner_covariance_mtx(r_E, r_A, T, T_A):
+def rE_noisy(T, eps):                 # (T)
+    return np.arccosh(1+eps*T/(1-T))
+
+def entangling_cloner_covariance_mtx(eps, r_A, T, T_A):
+    r_E = rE_noisy(T, eps)       ############# MI DA ANCORA ERRORE CHIARAMENTE SE T=1 PER LA DIVISIONE PER T-1 CHE PERò NON è ESSENZIALE
     cov_sq = squeezed_cov(r_A/2)
     cov_sq_w_vac = block_diag(I2, cov_sq)
     S_bsA = block_diag(beamspl_symplectic(T_A),I2)
@@ -122,9 +132,10 @@ def entangling_cloner_covariance_mtx(r_E, r_A, T, T_A):
     return cov_final
 
 def CV_keyrate(r_A, T, eps, alice_detection_mode = 'homodyne', detection_mode='homodyne', reconciliation='reverse'):
-    r_E = rE_noisy(T, eps)
+    # r_E = rE_noisy(T, eps)
+    
     T_A = T_A_dict[alice_detection_mode]
-    cov_final = entangling_cloner_covariance_mtx(r_E, r_A, T, T_A)
+    cov_final = entangling_cloner_covariance_mtx(eps, r_A, T, T_A)
     sigma_AB = cov_final[:4, :4]    # selecting only Alice and Bob's modes (in this order) from the final covariance matrix of the whole system (Alice, Bob, Eve)
     sigma_AB_cond = conditional_cov_mtx(sigma_AB, detection_mode=detection_mode, reconciliation=reconciliation)
     I_AB = mutual_information(sigma_AB, sigma_AB_cond, detection_mode=detection_mode)
