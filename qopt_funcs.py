@@ -71,7 +71,7 @@ def conditional_cov_mtx(cov_mtx, detection_mode = 'homodyne', reconciliation = '
         C = C.T    # following from the "swap" between Alice and Bob (actually C is often symmetric)
     else:
         raise ValueError("Invalid detection mode. Expected 'direct' or 'reverse'.")
-    print(cov_mtx)#################################
+    # print(cov_mtx)#################################
     if detection_mode == 'homodyne':
         pseu_inv = LA.pinv( LA.multi_dot([Pi_q, X, Pi_q]) )
     elif detection_mode == 'heterodyne':
@@ -82,6 +82,7 @@ def conditional_cov_mtx(cov_mtx, detection_mode = 'homodyne', reconciliation = '
 
 def mutual_information(V, Vb_alpha, detection_mode='homodyne'):    # V --> full 4x4 cov. mtx ;  Vb_alpha --> 2x2 conditional cov. mtx of Bob
     # ANCHE QUI,CAMBIARE NOMI, CHE SI RIFERISCONO A SIMBOLI PER CASO DIRECT REC
+    # NON MI E' ANCORA CHIARO IL DISCORSO SUI FATTORI 1/2. DAL PLOT DEI TASSI ALCUNI SEMBRANO SBAGLIATI
     B = V[2:4, 2:4]                     # A shares info about the measurements, B adapts its key accordingly
     if detection_mode=='homodyne':
         first_term = B[0,0]/Vb_alpha[0,0]
