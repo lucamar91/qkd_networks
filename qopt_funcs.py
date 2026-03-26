@@ -56,7 +56,7 @@ def binary_entropy(x):    # often called h(x), but again notation is not unanimo
 
 def transmittance_v_distance(d):
     alpha = state_of_the_art_params.alpha
-    return 10**(-alpha/10 * d)    # 1/10 factor in the exponent due to dB def: https://en.wikipedia.org/wiki/Decibel
+    return 10**(-alpha/10 * d)    # 1/10_factor in the exponent due to dB def: https://en.wikipedia.org/wiki/Decibel
 
 
 def conditional_cov_mtx(cov_mtx, detection_mode = 'homodyne', reconciliation = 'reverse'):    # QUESTA è GIUSTA, MA NON PUO ESSERE USATA SULLA entangling_cloner_covariance_mtx  
@@ -94,16 +94,20 @@ def mutual_information(V, Vb_alpha, detection_mode='homodyne'):    # V --> full 
     else:
         raise ValueError("Invalid detection mode. Expected 'homodyne' or 'heterodyne'.")
 
-def mutual_information_zhang(V, T, epsilon, detection_mode='homodyne'):
+def mutual_information_zhang(V, T, epsilon, alice_detection_mode, bob_detection_mode):    # DA TASSI PIU O MENO SENSATI MA NON DA RISULTATI ATTESI (EG Tc=0.5 PER DIRECT REC)
     chi_line = (1 - T) / T + epsilon
-    if detection_mode == 'homodyne':
-        chi_tot = chi_line
-        I_AB = 0.5 * np.log2((V + chi_tot) / (1 + chi_tot))
-    elif detection_mode == 'heterodyne':
-        chi_tot = chi_line + 1
-        I_AB = np.log2((T*(V + chi_tot) + 1) / (T*(1 + chi_tot) + 1))
+    variance = T*(V + chi_line)
+    if alice_detection_mode == 'homodyne':
+        conditional_variance = T*(1./V + chi_line)
+    elif alice_detection_mode == 'heterodyne':
+        conditional_variance = T*(1. + chi_line)
     else:
         raise ValueError("Invalid detection mode.")
+    if bob_detection_mode == 'heterodyne':
+        variance += 1
+        conditional_variance += 1
+    I_AB = np.log2(variance / conditional_variance)
+
     return I_AB
 
 def symplectic_eigvals(gamma):
@@ -133,18 +137,24 @@ def CV_keyrate_multi_protocol(r_A, T, eps, alice_detection_mode = 'homodyne', bo
         detection_mode = bob_detection_mode
     else:
         raise ValueError("Invalid detection mode. Expected 'direct' or 'reverse'.")
+    
+    if alice_detection_mode == 'homodyne' and bob_detection_mode == 'homodyne':
+        sifting_factor = 0.5
+    else:
+        sifting_factor = 1.
+
     sigma_AB_cond = conditional_cov_mtx(sigma_AB, detection_mode=detection_mode, reconciliation=reconciliation)
-    print("sigma_AB_cond=", sigma_AB_cond)#################################
+    # print("sigma_AB_cond=", sigma_AB_cond)#################################
     I_AB = mutual_information(sigma_AB, sigma_AB_cond, detection_mode=detection_mode)
+    # I_AB = mutual_information_zhang(sigma_AB[0,0], T, eps, alice_detection_mode=alice_detection_mode, bob_detection_mode=bob_detection_mode) ###################################
 
     nus_12 = symplectic_eigvals(sigma_AB)
     S_E = np.sum(np.array([g(nu) for nu in nus_12]))       # Eve's entropy before the measurement
     nu_prime = symplectic_eigvals(sigma_AB_cond)
-    print("nu1, nu2, nu_prime=", nus_12, nu_prime)
     S_E_cond = np.sum(np.array([g(nu) for nu in nu_prime])) # Eve's entropy after the measurement 
     holevo_bound = S_E - S_E_cond
     
-    key_rate = I_AB - holevo_bound
+    key_rate = sifting_factor * (I_AB - holevo_bound)
     return np.real( key_rate )
 
 
@@ -216,7 +226,7 @@ def hybrid_keyrate_bitpersec(pars, d, d_hybrid):    # in bit/s! assuming homodyn
 
 class param_set(object):
     def __init__(self):
-        self.alpha = None          # the exponential decaying factor in T(d) [dB/km]
+        self.alpha = None          # the exponential decaying_factor in T(d) [dB/km]
         self.freq = None           # source repetition rate [Hz]: same for CV and DV
         # CV-specific
         self.eps_B = None          # excess noise on Bob's side [SNU] (Shot Noise Units)
