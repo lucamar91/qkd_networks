@@ -80,20 +80,23 @@ def conditional_cov_mtx(cov_mtx, detection_mode = 'homodyne', reconciliation = '
         raise ValueError("Invalid detection mode. Expected 'homodyne' or 'heterodyne'.")
     return Y - LA.multi_dot([C, pseu_inv, C.T])      # the returned mtx is the conditional cov. matrix of the other party
 
-def mutual_information(V, Vb_alpha, detection_mode='homodyne'):    # V --> full 4x4 cov. mtx ;  Vb_alpha --> 2x2 conditional cov. mtx of Bob
+def mutual_information(V, Vb_alpha, estimating_party_detection_mode):    # V --> full 4x4 cov. mtx ;  Vb_alpha --> 2x2 conditional cov. mtx of Bob
     # ANCHE QUI,CAMBIARE NOMI, CHE SI RIFERISCONO A SIMBOLI PER CASO DIRECT REC
     # NON MI E' ANCORA CHIARO IL DISCORSO SUI FATTORI 1/2. DAL PLOT DEI TASSI ALCUNI SEMBRANO SBAGLIATI
     B = V[2:4, 2:4]                     # A shares info about the measurements, B adapts its key accordingly
-    if detection_mode=='homodyne':
+    if estimating_party_detection_mode=='homodyne':
         first_term = B[0,0]/Vb_alpha[0,0]
         second_term = B[1,1]/Vb_alpha[1,1]
-        return 0.5 * ( np.log2(first_term) + np.log2(second_term) )
-    elif detection_mode=='heterodyne':
+        # return 0.5 * ( np.log2(first_term) + np.log2(second_term) )
+    elif estimating_party_detection_mode=='heterodyne':
         first_term = (B[0,0] + 1)/(Vb_alpha[0,0] + 1)
         second_term = (B[1,1] + 1)/(Vb_alpha[1,1] + 1)
-        return np.log2(first_term) + np.log2(second_term)
+        # return np.log2(first_term) + np.log2(second_term)
     else:
         raise ValueError("Invalid detection mode. Expected 'homodyne' or 'heterodyne'.")
+
+    return np.log2(first_term) + np.log2(second_term)
+
 
 def mutual_information_zhang(V, T, epsilon, alice_detection_mode, bob_detection_mode):    # DA TASSI PIU O MENO SENSATI MA NON DA RISULTATI ATTESI (EG Tc=0.5 PER DIRECT REC)
     chi_line = (1 - T) / T + epsilon
@@ -133,20 +136,17 @@ def TMSS_through_lossy_noisy_channel_cov_mtx(r, T, eps):
 def CV_keyrate_multi_protocol(r_A, T, eps, alice_detection_mode = 'homodyne', bob_detection_mode='homodyne', reconciliation='reverse'):        # DEBUGGING
     sigma_AB = TMSS_through_lossy_noisy_channel_cov_mtx(r_A, T, eps)
     if reconciliation == 'direct':
-        detection_mode = alice_detection_mode
+        reference_party_detection_mode, estimating_party_detection_mode = alice_detection_mode, bob_detection_mode
     elif reconciliation == 'reverse':
-        detection_mode = bob_detection_mode
+        reference_party_detection_mode, estimating_party_detection_mode = bob_detection_mode, alice_detection_mode
     else:
         raise ValueError("Invalid detection mode. Expected 'direct' or 'reverse'.")
     
-    if alice_detection_mode == 'homodyne' and bob_detection_mode == 'homodyne':
-        sifting_factor = 0.5
-    else:
-        sifting_factor = 1.
-
-    sigma_AB_cond = conditional_cov_mtx(sigma_AB, detection_mode=detection_mode, reconciliation=reconciliation)
+    sigma_AB_cond = conditional_cov_mtx(sigma_AB, detection_mode=reference_party_detection_mode, reconciliation=reconciliation)
     # print("sigma_AB_cond=", sigma_AB_cond)#################################
-    I_AB = mutual_information(sigma_AB, sigma_AB_cond, detection_mode=detection_mode)
+    I_AB = mutual_information(sigma_AB, sigma_AB_cond, estimating_party_detection_mode=estimating_party_detection_mode)
+    if alice_detection_mode == 'homodyne' and bob_detection_mode == 'homodyne':
+        I_AB *= 0.5
     # I_AB = mutual_information_zhang(sigma_AB[0,0], T, eps, alice_detection_mode=alice_detection_mode, bob_detection_mode=bob_detection_mode) ###################################
 
     nus_12 = symplectic_eigvals(sigma_AB)
@@ -155,7 +155,7 @@ def CV_keyrate_multi_protocol(r_A, T, eps, alice_detection_mode = 'homodyne', bo
     S_E_cond = np.sum(np.array([g(nu) for nu in nu_prime])) # Eve's entropy after the measurement 
     holevo_bound = S_E - S_E_cond
     
-    key_rate = sifting_factor * (I_AB - holevo_bound)
+    key_rate = (I_AB - holevo_bound)
     return np.real( key_rate )
 
 
@@ -178,7 +178,7 @@ def CV_keyrate(r_A, T, eps, alice_detection_mode = 'homodyne', detection_mode='h
     cov_final = entangling_cloner_covariance_mtx(eps, r_A, T, T_A)
     sigma_AB = cov_final[:4, :4]    # selecting only Alice and Bob's modes (in this order) from the final covariance matrix of the whole system (Alice, Bob, Eve)
     sigma_AB_cond = conditional_cov_mtx(sigma_AB, detection_mode=detection_mode, reconciliation=reconciliation)
-    I_AB = mutual_information(sigma_AB, sigma_AB_cond, detection_mode=detection_mode)
+    I_AB = mutual_information(sigma_AB, sigma_AB_cond, estimating_party_detection_mode=detection_mode)
     # I_AB = mutual_information_zhang(sigma_AB[0,0], T, eps, detection_mode=detection_mode) ###################################
 
     nus_12 = symplectic_eigvals(sigma_AB)
