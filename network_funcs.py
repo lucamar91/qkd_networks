@@ -89,7 +89,7 @@ def S2_graph_definite_N(N, beta, mu, D=2, sample_from_file=False, return_coords=
             for j in range(i):                  # i compute A, Dist with all nodes alrdy in nw, new & old
                 Dists[i,j] = Dists[j,i] = angular_dist_in_sphere(coords[i], coords[j])
                 toss = np.random.uniform(0,1)
-                pij = ( 1 + ( R*Dists[i,j]/(mu*k[i]*k[j]) )**beta )**-1
+                pij = ( 1 + ( R*Dists[i,j]/(mu*k[i]*k[j])**(1./D) )**beta )**-1
                 if toss < pij:
                     A[i,j] = A[j,i] = 1
         # clean the new graph
