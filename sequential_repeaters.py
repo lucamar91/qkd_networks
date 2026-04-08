@@ -17,6 +17,7 @@ params.delta_det = 100e-12
 params.p_pair    = 0.05
 params.eta_c     = 0.8
 params.P_BSM     = 0.5
+params.P_coh     = 0.5
 
 A, dist, coords = build_s2_graph(N=1000, beta=2.6261, mu=0.0233, scale='city')
 net = QuantumRepeaterNetwork(params, A, dist, coords, architecture='node', scale='city')
