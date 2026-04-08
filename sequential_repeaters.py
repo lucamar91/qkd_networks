@@ -86,6 +86,7 @@ class RepeaterParams:
         self.p_pair    = None   # pair-generation probability per pulse
         self.eta_c     = None   # source-to-fibre coupling efficiency
         self.P_BSM     = None   # BSM success probability
+        self.P_coh     = None   # Coherence time of the memory
 
 
 # ---------------------------------------------------------------------------
@@ -239,12 +240,13 @@ class QuantumRepeaterNetwork:
     """
 
     def __init__(self, params, A, dist, coords=None,
-                 architecture='node', scale='city'):
+                 architecture='node', scale='city', decoherence=False):
         self.params       = params
         self.A            = A
         self.dist         = dist
         self.coords       = coords
         self.architecture = architecture
+        self.decoherence = decoherence
 
         # Resolve scale factor for coordinate projection
         if isinstance(scale, str):
@@ -356,13 +358,17 @@ class QuantumRepeaterNetwork:
         """
         a, b = path[0], path[1]
         T = 1.0 / self.Probs_mtx[a, b]
-
+        time=0
         for i in range(2, len(path)):
             a, b = path[i - 1], path[i]
             T_link = 1.0 / self.Probs_mtx[a, b]
             T = (T + T_link) / self.params.P_BSM
-
-        return T
+            if self.decoherence == True:
+                time+=T_link/self.params.nu
+        if self.decoherence == True:
+            return T, time
+        else:
+            return T
 
     def entanglement_rate(self, total_time):
         """
@@ -411,9 +417,10 @@ class QuantumRepeaterNetwork:
             Q_i = (
                 p_true * (p.q_0 + p.p_pair / 2) + 0.5 * p_acc
             ) / (p_true + p_acc)
-
             W *= (1 - 2 * Q_i)
-
+        if self.decoherence == True:
+            _, time = self.sequential_time(path)
+            W*=np.exp(-time/self.params.T_coh)
         return (1 - W) / 2
 
     def secret_key_rate(self, path):
