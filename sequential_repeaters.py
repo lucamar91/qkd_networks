@@ -10,14 +10,14 @@ from sequential_repeaters import RepeaterParams, QuantumRepeaterNetwork, build_s
 params = RepeaterParams()
 params.p_det     = 0.95
 params.alpha     = 0.18
-params.q_0       = 0.01
+params.q_0       = 0.01 #Check!!!
 params.nu        = 1e9
 params.R_dark    = 100
 params.delta_det = 100e-12
 params.p_pair    = 0.05
 params.eta_c     = 0.8
 params.P_BSM     = 0.5
-params.P_coh     = 0.5
+params.T_coh     = 0.05
 
 A, dist, coords = build_s2_graph(N=1000, beta=2.6261, mu=0.0233, scale='city')
 net = QuantumRepeaterNetwork(params, A, dist, coords, architecture='node', scale='city')
@@ -42,9 +42,14 @@ def binary_entropy(p):
         return 0.0
     return -p * np.log2(p) - (1 - p) * np.log2(1 - p)
 
-
+def BBPSSW(F1, F2):
+    """BBPSSW distillation protocol: output fidelity after one round and probability success"""
+    num = F1 * F2 + (1 - F1) * (1 - F2) / 9
+    den = F1 * F2 + (F1 * (1 - F2) + (1 - F1) * F2) / 3 + 5 * (1 - F1) * (1 - F2) / 9
+    F = num / den if den > 0 else 0.0
+    return F, den
 # ---------------------------------------------------------------------------
-# Parameter container  (mirrors the repo's param_set pattern)
+# Parameter container
 # ---------------------------------------------------------------------------
 
 class RepeaterParams:
@@ -241,13 +246,14 @@ class QuantumRepeaterNetwork:
     """
 
     def __init__(self, params, A, dist, coords=None,
-                 architecture='node', scale='city', decoherence=False):
+                 architecture='node', scale='city', decoherence=False, distillation_type=None):
         self.params       = params
         self.A            = A
         self.dist         = dist
         self.coords       = coords
         self.architecture = architecture
         self.decoherence = decoherence
+        self.distillation_type = distillation_type
 
         # Resolve scale factor for coordinate projection
         if isinstance(scale, str):
@@ -339,38 +345,6 @@ class QuantumRepeaterNetwork:
         )
         return weights, paths
 
-    def sequential_time(self, path):
-        """
-        Expected number of rounds to establish end-to-end entanglement
-        sequentially along *path*.
-
-        Recurrence:
-            T(first link)  = 1 / p(first link)
-            T(add one hop) = (T_prev + 1/p(new link)) / P_BSM
-
-        Parameters
-        ----------
-        path : list of int
-
-        Returns
-        -------
-        T : float
-            Expected number of rounds (divide by nu to get seconds).
-        """
-        a, b = path[0], path[1]
-        T = 1.0 / self.Probs_mtx[a, b]
-        time=0
-        for i in range(2, len(path)):
-            a, b = path[i - 1], path[i]
-            T_link = 1.0 / self.Probs_mtx[a, b]
-            T = (T + T_link) / self.params.P_BSM
-            if self.decoherence == True:
-                time+=T_link/self.params.nu
-        if self.decoherence == True:
-            return T, time
-        else:
-            return T
-
     def entanglement_rate(self, total_time):
         """
         Entanglement generation rate [pairs/s].
@@ -384,63 +358,72 @@ class QuantumRepeaterNetwork:
         -------
         R_ent : float
         """
-        return 0.5 * self.params.nu / total_time
+        return self.params.nu / total_time
 
-    def qber(self, path):
+    def Q_link(self, a, b):
         """
-        QBER accumulated along *path*, accounting for baseline QBER,
+        QBER for a single link (a,b), accounting for baseline QBER,
         dark counts, and multi-photon contributions.
 
         Parameters
         ----------
-        path : list of int
+        a, b : int
+            Node indices of the link.
 
         Returns
         -------
         Q : float  (0-0.5)
         """
         p = self.params
-        p_dc = p.R_dark * p.delta_det   # dark-count probability per gate
+        eta_A = self.eta_A_mtx[a, b]
+        eta_B = self.eta_B_mtx[a, b]
 
-        W = 1.0   # accumulated Werner-state visibility
-        for i in range(1, len(path)):
+        p_acc = (
+            p.p_pair * eta_A * (1 - eta_B) * p.R_dark * p.delta_det
+            + p.p_pair * eta_B * (1 - eta_A) * p.R_dark * p.delta_det
+            + (p.R_dark * p.delta_det) ** 2
+        )
+        p_true = p.p_pair * eta_A * eta_B
+
+        return (
+            p_true * (p.q_0 + p.p_pair / 2) + 0.5 * p_acc
+        ) / (p_true + p_acc)
+
+    def calculate_metrics(self, path):
+        a, b = path[0], path[1]
+        T = 1.0 / self.Probs_mtx[a, b]
+        Q = self.Q_link(a, b)
+        W = 1 - 2*Q
+        for i in range(2, len(path)):
             a, b = path[i - 1], path[i]
-            eta_A = self.eta_A_mtx[a, b]
-            eta_B = self.eta_B_mtx[a, b]
+            T_link = 1.0 / self.Probs_mtx[a, b]
+            T = (T + T_link) / self.params.P_BSM
+            Q = self.Q_link(a, b)
+            W_link = 1 - 2*Q
+            W_swap = W * np.exp(-T_link/self.params.T_coh) * W_link
+            if self.distillation_type == 'multiplexing':
+                F1 = F2 = (1 + 3 * W_swap) / 4
+                F, P_suc = BBPSSW(F1, F2)
+                T = T / P_suc
+                W = (4 * F - 1) / 3
+            elif self.distillation_type == 'standard':
+                W1 = W_swap * np.exp(-T / self.params.T_coh)
+                F1 = (1 + 3 * W1) / 4
+                F2 = (1 + 3 * W_swap) / 4
+                F, P_suc = BBPSSW(F1, F2)
+                T = 2 * T / P_suc
+                W = (4 * F - 1) / 3
+            elif self.distillation_type == None:
+                W = W_swap
+            else:
+                raise ValueError("distillation_type must be 'multiplexing', 'standard', or None")
 
-            p_acc = (
-                p.p_pair * eta_A * (1 - eta_B) * p_dc
-                + p.p_pair * eta_B * (1 - eta_A) * p_dc
-                + p_dc ** 2
-            )
-            p_true = p.p_pair * eta_A * eta_B
-
-            Q_i = (
-                p_true * (p.q_0 + p.p_pair / 2) + 0.5 * p_acc
-            ) / (p_true + p_acc)
-            W *= (1 - 2 * Q_i)
-        if self.decoherence == True:
-            _, time = self.sequential_time(path)
-            W*=np.exp(-time/self.params.T_coh)
-        return (1 - W) / 2
-
-    def secret_key_rate(self, path):
-        """
-        Secret key rate for BBM92 along *path* [bits/s].
-
-        Parameters
-        ----------
-        path : list of int
-
-        Returns
-        -------
-        SKR : float
-        """
-        T   = self.sequential_time(path)
-        Q   = self.qber(path)
-        R   = self.entanglement_rate(T)
-        H   = binary_entropy(Q)
-        return R * (1 - 2 * H)
+        QBER = (1 - W) / 2
+        R_raw = self.entanglement_rate(T)
+        R = 0.5 * R_raw
+        H = binary_entropy(QBER)
+        SKR = R * (1 - 2 * H)
+        return T, QBER, SKR
 
     def path_distances(self, path):
         """
