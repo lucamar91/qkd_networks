@@ -1,0 +1,1107 @@
+"""
+sequential_repeaters.py
+
+Analysis of sequential quantum repeater chains over arbitrary network graphs,
+with optional entanglement distillation.
+
+Typical usage
+-------------
+from sequential_repeaters import RepeaterParams, QuantumRepeaterNetwork, build_s2_graph
+
+params = RepeaterParams()
+params.p_det     = 0.95
+params.alpha     = 0.18
+params.q_0       = 0.01
+params.nu        = 1e9
+params.R_dark    = 100
+params.delta_det = 100e-12
+params.p_pair    = 0.05
+params.eta_c     = 0.8
+params.P_BSM     = 0.5
+params.T_coh     = 0.05    # memory coherence time [s]
+
+A, dist, coords = build_s2_graph(N=1000, beta=2.6261, mu=0.0233, scale='city')
+net = QuantumRepeaterNetwork(params, A, dist, coords, architecture='node',
+                             scale='city', distillation_type=None)
+
+df = net.analyze_all_paths(source=0)
+net.export_html(source=0, output_path="repeater_viz.html")
+"""
+
+import json
+import math
+import numpy as np
+import networkx as nx
+import pandas as pd
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def binary_entropy(p):
+    """Binary entropy H(p) = -p*log2(p) - (1-p)*log2(1-p)."""
+    if p == 0 or p == 1:
+        return 0.0
+    return -p * np.log2(p) - (1 - p) * np.log2(1 - p)
+
+
+def BBPSSW(F1, F2):
+    """
+    BBPSSW entanglement distillation protocol.
+
+    Given two pairs with fidelities F1, F2, perform one round of
+    BBPSSW and return the output fidelity and success probability.
+
+    Parameters
+    ----------
+    F1, F2 : float   input pair fidelities (Werner state)
+
+    Returns
+    -------
+    F_out : float   output fidelity
+    P_suc : float   success probability
+    """
+    num = F1 * F2 + (1 - F1) * (1 - F2) / 9
+    den = (F1 * F2
+           + (F1 * (1 - F2) + (1 - F1) * F2) / 3
+           + 5 * (1 - F1) * (1 - F2) / 9) # This is also the probability of success
+    F_out = num / den if den > 0 else 0.0
+    return F_out, den
+
+
+# ---------------------------------------------------------------------------
+# Parameter container
+# ---------------------------------------------------------------------------
+
+class RepeaterParams:
+    """
+    Physical parameters for a DV quantum repeater link.
+
+    All attributes initialised to None; set them before passing to
+    QuantumRepeaterNetwork.
+
+    Attributes
+    ----------
+    p_det     : float  Detector efficiency (0-1).
+    alpha     : float  Fibre loss [dB/km].
+    q_0       : float  Baseline intrinsic QBER.
+    nu        : float  Source repetition rate [Hz].
+    R_dark    : float  Dark-count rate [Hz].
+    delta_det : float  Detector time-gate duration [s].
+    p_pair    : float  Pair-generation probability per pulse.
+    eta_c     : float  Source-to-fibre coupling efficiency (0-1).
+    P_BSM     : float  BSM success probability (0.5 for linear optics).
+    T_coh     : float  Memory coherence time [s].  Used only when
+                       distillation_type is not None.
+    """
+
+    def __init__(self):
+        self.p_det     = None
+        self.alpha     = None
+        self.q_0       = None
+        self.nu        = None
+        self.R_dark    = None
+        self.delta_det = None
+        self.p_pair    = None
+        self.eta_c     = None
+        self.P_BSM     = None
+        self.T_coh     = None   # memory coherence time [s]
+
+
+# ---------------------------------------------------------------------------
+# Graph builders
+# ---------------------------------------------------------------------------
+
+_SCALE_FACTORS = {
+    'city':    10,    # max distance ~31 km
+    'country': 100,   # max distance ~310 km
+    'europe':  1000,  # max distance ~3100 km
+}
+
+
+def build_s2_graph(N, beta, mu, scale='city', D=2, sample_from_file=False):
+    """
+    Build an S2 random-geometric graph.
+
+    Parameters
+    ----------
+    N              : int    Number of nodes.
+    beta           : float  Inverse-temperature of the S2 model.
+    mu             : float  Average-degree parameter.
+    scale          : {'city','country','europe'} or float
+    D              : int    Embedding dimension.
+    sample_from_file : bool
+
+    Returns
+    -------
+    A      : np.ndarray (N, N)  Binary adjacency matrix.
+    dist   : np.ndarray (N, N)  Scaled distance matrix [km].
+    coords : np.ndarray (N, 3)  Unit-sphere coordinates.
+    """
+    from network_funcs import S2_graph_definite_N
+
+    A, dist, coords = S2_graph_definite_N(
+        N, beta, mu, D=D,
+        sample_from_file=sample_from_file,
+        return_coords=True,
+    )
+
+    factor = _SCALE_FACTORS[scale.lower()] if isinstance(scale, str) else float(scale)
+    dist   = factor * dist
+    return A, dist, coords
+
+
+def build_graph(n_hubs, avg_n_branches):
+    """
+    Build a hub-and-spoke graph with a linear backbone.
+
+    Parameters
+    ----------
+    n_hubs         : int  Number of backbone hubs.
+    avg_n_branches : int  Average number of leaf nodes per hub.
+
+    Returns
+    -------
+    A    : np.ndarray (N, N)  Binary adjacency matrix.
+    dist : np.ndarray (N, N)  Distance matrix [km].
+    """
+    import random
+    G = nx.Graph()
+
+    for i in range(n_hubs - 1):
+        d = random.randint(150, 250) * 0.1   # 15–25 km
+        G.add_edge(i, i + 1, weight=d)
+
+    next_leaf = n_hubs
+    for i in range(n_hubs):
+        n_branches = max(0, random.randint(avg_n_branches - 3, avg_n_branches + 3))
+        for _ in range(n_branches):
+            d = random.randint(20, 50) * 0.1  # 2–5 km
+            G.add_edge(i, next_leaf, weight=d)
+            next_leaf += 1
+
+    A    = nx.to_numpy_array(G, weight=None)
+    dist = nx.to_numpy_array(G, weight='weight')
+    return A, dist
+
+
+# ---------------------------------------------------------------------------
+# Coordinate projection
+# ---------------------------------------------------------------------------
+
+def _sphere_to_2d(coords, scale_km):
+    """
+    Equirectangular projection of unit-sphere coords to km.
+
+    Parameters
+    ----------
+    coords   : np.ndarray (N, 3)
+    scale_km : float   km per radian
+
+    Returns
+    -------
+    x, y : np.ndarray (N,)   positions in km
+    """
+    lat = np.arcsin(np.clip(coords[:, 2], -1, 1))
+    lon = np.arctan2(coords[:, 1], coords[:, 0])
+    return lon * scale_km, lat * scale_km
+
+
+# ---------------------------------------------------------------------------
+# Main class
+# ---------------------------------------------------------------------------
+
+class QuantumRepeaterNetwork:
+    """
+    Sequential quantum repeater analysis over a fixed network graph,
+    with optional entanglement distillation.
+
+    Parameters
+    ----------
+    params           : RepeaterParams
+    A                : np.ndarray (N, N)  Binary adjacency matrix.
+    dist             : np.ndarray (N, N)  Distance matrix [km].
+    coords           : np.ndarray (N, 3) or None
+                       Unit-sphere coords; required for export_html.
+    architecture     : {'node', 'midpoint'}
+    scale            : str or float   Scale used when building the graph.
+    distillation_type : {None, 'multiplexing', 'standard'}
+        None           – no distillation; plain sequential repeater.
+        'multiplexing' – BBPSSW on two freshly generated pairs; total
+                         time scales as T / P_suc.
+        'standard'     – BBPSSW where one pair has aged for time T; total
+                         time scales as 2*T / P_suc.
+    """
+
+    def __init__(self, params, A, dist, coords=None,
+                 architecture='node', scale='city',
+                 distillation_type=None):
+        self.params            = params
+        self.A                 = A
+        self.dist              = dist
+        self.coords            = coords
+        self.architecture      = architecture
+        self.distillation_type = distillation_type
+
+        if isinstance(scale, str):
+            self.scale_km    = _SCALE_FACTORS[scale.lower()]
+            self.scale_label = scale
+        else:
+            self.scale_km    = float(scale)
+            self.scale_label = f'{scale} km'
+
+        self.Probs_mtx, self.eta_A_mtx, self.eta_B_mtx = \
+            self._build_prob_matrix()
+
+    # ------------------------------------------------------------------
+    # Private
+    # ------------------------------------------------------------------
+
+    def _build_prob_matrix(self):
+        """
+        Compute per-link entanglement probability matrix and transmission
+        matrices for both detector arms.
+        """
+        p    = self.params
+        A, d = self.A, self.dist
+
+        if self.architecture == 'node':
+            dist_A = np.zeros_like(d)
+            dist_B = d
+        elif self.architecture == 'midpoint':
+            dist_A = d / 2
+            dist_B = d / 2
+        else:
+            raise ValueError("architecture must be 'node' or 'midpoint'")
+
+        eta_A_mtx    = p.eta_c * p.p_det * 10 ** (-p.alpha * dist_A / 10) * A
+        eta_B_mtx    = p.eta_c * p.p_det * 10 ** (-p.alpha * dist_B / 10) * A
+        P_ent_matrix = p.p_pair * eta_A_mtx * eta_B_mtx
+
+        return P_ent_matrix, eta_A_mtx, eta_B_mtx
+
+    # ------------------------------------------------------------------
+    # Public analysis methods
+    # ------------------------------------------------------------------
+
+    def optimal_path(self, source, target=None):
+        """
+        Dijkstra shortest path maximising log-probability of success.
+
+        Edge weight: w(i,j) = -log2(p_ij) - log2(P_BSM).
+
+        Parameters
+        ----------
+        source : int
+        target : int or None
+
+        Returns
+        -------
+        weights : dict or float
+        paths   : dict or list
+        """
+        p = self.params
+        W = np.zeros_like(self.Probs_mtx)
+        nz = self.Probs_mtx > 0
+        W[nz] = -np.log2(self.Probs_mtx[nz]) - np.log2(p.P_BSM)
+        G = nx.from_numpy_array(W)
+        return nx.single_source_dijkstra(G, source, target=target, weight='weight')
+
+    def entanglement_rate(self, total_time):
+        """
+        Raw entanglement generation rate [pairs/s] = nu / T.
+
+        Parameters
+        ----------
+        total_time : float   Expected number of rounds T.
+
+        Returns
+        -------
+        float
+        """
+        return self.params.nu / total_time
+
+    def Q_link(self, a, b):
+        """
+        Per-link QBER for link (a, b), accounting for baseline QBER,
+        dark counts, and multi-photon contributions.
+
+        Parameters
+        ----------
+        a, b : int   Node indices.
+
+        Returns
+        -------
+        float   QBER in [0, 0.5]
+        """
+        p     = self.params
+        eta_A = self.eta_A_mtx[a, b]
+        eta_B = self.eta_B_mtx[a, b]
+        p_dc  = p.R_dark * p.delta_det
+
+        p_acc  = (p.p_pair * eta_A * (1 - eta_B) * p_dc
+                  + p.p_pair * eta_B * (1 - eta_A) * p_dc
+                  + p_dc ** 2)
+        p_true = p.p_pair * eta_A * eta_B
+
+        if p_true + p_acc == 0:
+            return 0.5   # no signal — maximally mixed
+
+        return (p_true * (p.q_0 + p.p_pair / 2) + 0.5 * p_acc) / (p_true + p_acc)
+
+    def calculate_metrics(self, path):
+        """
+        Compute total time T, end-to-end QBER, and SKR for *path*,
+        incorporating coherence decay and optional distillation.
+
+        The recurrence over hops i = 1 … N-1:
+          1. Generate link (a→b): T += 1/p_ent(a,b), divided by P_BSM.
+          2. Apply decoherence: W_swap = W_prev * exp(-T_link/T_coh) * W_link(a,b).
+          3. If distillation is enabled, apply BBPSSW and update T accordingly.
+
+        Parameters
+        ----------
+        path : list of int   Ordered node indices.
+
+        Returns
+        -------
+        T    : float   Total expected rounds.
+        QBER : float   End-to-end QBER.
+        SKR  : float   Secret key rate [bit/s].
+        """
+        p = self.params
+
+        # ── first link ───────────────────────────────────────────────
+        a, b = path[0], path[1]
+        T    = 1.0 / self.Probs_mtx[a, b]
+        Q    = self.Q_link(a, b)
+        W    = 1 - 2 * Q   # Werner-state visibility after first link
+
+        # ── subsequent links ─────────────────────────────────────────
+        for i in range(2, len(path)):
+            a, b   = path[i - 1], path[i]
+            T_link = 1.0 / self.Probs_mtx[a, b]
+
+            # Sequential wait: accumulate time, divide by P_BSM for swap
+            T = (T + T_link) / p.P_BSM
+
+            Q_new  = self.Q_link(a, b)
+            W_link = 1 - 2 * Q_new
+
+            # Coherence decay of the already-stored pair during T_link
+            W_swap = W * np.exp(-(T_link / p.nu) / p.T_coh) * W_link
+
+            if self.distillation_type == 'multiplexing':
+                # Both pairs freshly generated → same fidelity
+                F1 = F2 = (1 + 3 * W_swap) / 4
+                F_out, P_suc = BBPSSW(F1, F2)
+                T = T / P_suc
+                W = (4 * F_out - 1) / 3
+
+            elif self.distillation_type == 'standard':
+                # One pair aged for time T, the other is fresh
+                W1 = W_swap * np.exp(-(T / p.nu) / p.T_coh)
+                F1   = (1 + 3 * W1)    / 4
+                F2   = (1 + 3 * W_swap) / 4
+                F_out, P_suc = BBPSSW(F1, F2)
+                T = 2 * T / P_suc
+                W = (4 * F_out - 1) / 3
+
+            elif self.distillation_type is None:
+                W = W_swap
+
+            else:
+                raise ValueError(
+                    "distillation_type must be 'multiplexing', 'standard', or None"
+                )
+
+        QBER  = (1 - W) / 2
+        R_raw = self.entanglement_rate(T)
+        R     = 0.5 * R_raw          # factor 0.5: one pair consumed per BSM
+        H     = binary_entropy(QBER)
+        SKR   = R * (1 - 2 * H)
+        return T, QBER, SKR
+
+    def path_distances(self, path):
+        """
+        Physical distance of each hop along *path* [km].
+
+        Parameters
+        ----------
+        path : list of int
+
+        Returns
+        -------
+        list of float
+        """
+        return [
+            float(self.dist[path[i - 1], path[i]])
+            for i in range(1, len(path))
+        ]
+
+    def analyze_all_paths(self, source):
+        """
+        Compute SKR, QBER, and total time for every reachable destination
+        from *source* using calculate_metrics.
+
+        Parameters
+        ----------
+        source : int
+
+        Returns
+        -------
+        df : pd.DataFrame
+            Columns: 'total_time', 'Q', 'SKR', 'path'.
+            Indexed by destination node index.
+        """
+        _, paths = self.optimal_path(source)
+        paths.pop(source, None)
+
+        records = []
+        for dest, path in paths.items():
+            T, Q, SKR = self.calculate_metrics(path)
+            records.append({
+                'total_time': T,
+                'Q':          Q,
+                'SKR':        SKR,
+                'path':       path,
+            })
+
+        return pd.DataFrame(records, index=list(paths.keys()))
+
+    # ------------------------------------------------------------------
+    # HTML export
+    # ------------------------------------------------------------------
+
+    def export_html(self, source, output_path="repeater_viz.html"):
+        """
+        Export a self-contained interactive HTML visualisation.
+
+        Nodes are coloured by SKR (log scale):
+          gold  = source, green gradient = SKR > 0,
+          red   = SKR ≤ 0, grey = unreachable.
+
+        Click a node to highlight the optimal path and show per-hop
+        distances, SKR, QBER, and hop count in the side panel.
+
+        Parameters
+        ----------
+        source      : int   Source node index.
+        output_path : str   Output file path.
+        """
+        if self.coords is None:
+            raise ValueError("coords must be provided to use export_html.")
+
+        print(f"Computing all paths from node {source}...")
+        df = self.analyze_all_paths(source)
+
+        x, y = _sphere_to_2d(self.coords, self.scale_km)
+        N    = len(x)
+
+        skr_by_node  = {int(i): row['SKR']       for i, row in df.iterrows()}
+        path_by_node = {int(i): row['path']       for i, row in df.iterrows()}
+        qber_by_node = {int(i): row['Q']          for i, row in df.iterrows()}
+        time_by_node = {int(i): row['total_time'] for i, row in df.iterrows()}
+
+        pos_skrs = [v for v in skr_by_node.values() if v > 0]
+        log_min  = math.log10(min(pos_skrs)) if pos_skrs else 0.0
+        log_max  = math.log10(max(pos_skrs)) if pos_skrs else 1.0
+
+        def skr_to_green(skr):
+            t = ((math.log10(skr) - log_min) / (log_max - log_min)
+                 if log_max != log_min else 1.0)
+            t = max(0.0, min(1.0, t))
+            return f'rgb(0,{int(80 + t * 175)},{int(t * 100)})'
+
+        node_colors, node_skr_labels = [], []
+        for i in range(N):
+            if i == source:
+                node_colors.append('rgb(255,215,0)')
+                node_skr_labels.append('SOURCE')
+            elif i not in skr_by_node:
+                node_colors.append('rgb(80,80,80)')
+                node_skr_labels.append('Unreachable')
+            elif skr_by_node[i] <= 0:
+                node_colors.append('rgb(200,40,40)')
+                node_skr_labels.append(f'{skr_by_node[i]:.3e} bit/s')
+            else:
+                node_colors.append(skr_to_green(skr_by_node[i]))
+                node_skr_labels.append(f'{skr_by_node[i]:.3e} bit/s')
+
+        edge_x, edge_y = [], []
+        rows, cols = np.where(np.triu(self.A, k=1) > 0)
+        for i, j in zip(rows, cols):
+            edge_x += [float(x[i]), float(x[j]), None]
+            edge_y += [float(y[i]), float(y[j]), None]
+
+        path_data = {}
+        for dest, path in path_by_node.items():
+            hop_dists = self.path_distances(path)
+            path_data[dest] = {
+                'path':       path,
+                'hop_dists':  hop_dists,
+                'skr':        skr_by_node[dest],
+                'qber':       qber_by_node[dest],
+                'total_time': time_by_node[dest],
+                'total_dist': sum(hop_dists),
+            }
+
+        # distillation label for header
+        dist_label = self.distillation_type if self.distillation_type else 'none'
+
+        js_data = {
+            'source':       source,
+            'x':            [float(v) for v in x],
+            'y':            [float(v) for v in y],
+            'node_colors':  node_colors,
+            'skr_labels':   node_skr_labels,
+            'edge_x':       edge_x,
+            'edge_y':       edge_y,
+            'path_data':    path_data,
+            'scale_label':  self.scale_label,
+            'architecture': self.architecture,
+            'dist_label':   dist_label,
+            'log_min':      log_min,
+            'log_max':      log_max,
+        }
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(_build_html(js_data))
+        print(f"Saved → {output_path}")
+    def export_html_3d(self, source, output_path="repeater_viz_3d.html",
+                       sphere_radius=1.0):
+        """
+        Export a self-contained interactive 3D globe visualisation.
+
+        Nodes are placed at their true unit-sphere coordinates (scaled by
+        *sphere_radius*) so the topology is geographically faithful.
+        Edges are drawn as straight lines in 3D space between sphere-surface
+        points, which are great-circle arcs — exactly as in the original
+        plot_graph_on_sphere from network_funcs.
+
+        The globe can be rotated by dragging (Plotly orbit mode).
+
+        Node colouring and the click-to-inspect interaction are identical to
+        export_html (2D version):
+          gold  = source, green gradient = SKR > 0 (log scale),
+          red   = SKR ≤ 0, grey = unreachable.
+
+        Parameters
+        ----------
+        source        : int    Source node index.
+        output_path   : str    Output file path.
+        sphere_radius : float  Visual radius of the globe (default 1.0).
+        """
+        if self.coords is None:
+            raise ValueError("coords must be provided to use export_html_3d.")
+
+        print(f"Computing all paths from node {source}...")
+        df = self.analyze_all_paths(source)
+
+        # Unit-sphere coords × visual radius
+        cx = (self.coords[:, 0] * sphere_radius).tolist()
+        cy = (self.coords[:, 1] * sphere_radius).tolist()
+        cz = (self.coords[:, 2] * sphere_radius).tolist()
+        N = len(cx)
+
+        skr_by_node = {int(i): row['SKR'] for i, row in df.iterrows()}
+        path_by_node = {int(i): row['path'] for i, row in df.iterrows()}
+        qber_by_node = {int(i): row['Q'] for i, row in df.iterrows()}
+        time_by_node = {int(i): row['total_time'] for i, row in df.iterrows()}
+
+        pos_skrs = [v for v in skr_by_node.values() if v > 0]
+        log_min = math.log10(min(pos_skrs)) if pos_skrs else 0.0
+        log_max = math.log10(max(pos_skrs)) if pos_skrs else 1.0
+
+        def skr_to_green(skr):
+            t = ((math.log10(skr) - log_min) / (log_max - log_min)
+                 if log_max != log_min else 1.0)
+            t = max(0.0, min(1.0, t))
+            return f'rgb(0,{int(80 + t * 175)},{int(t * 100)})'
+
+        node_colors, node_skr_labels = [], []
+        for i in range(N):
+            if i == source:
+                node_colors.append('rgb(255,215,0)')
+                node_skr_labels.append('SOURCE')
+            elif i not in skr_by_node:
+                node_colors.append('rgb(80,80,80)')
+                node_skr_labels.append('Unreachable')
+            elif skr_by_node[i] <= 0:
+                node_colors.append('rgb(200,40,40)')
+                node_skr_labels.append(f'{skr_by_node[i]:.3e} bit/s')
+            else:
+                node_colors.append(skr_to_green(skr_by_node[i]))
+                node_skr_labels.append(f'{skr_by_node[i]:.3e} bit/s')
+
+        # Background edges: straight lines in 3D between sphere-surface points
+        # (these ARE great-circle arcs on the sphere surface, same as the
+        # original plot_graph_on_sphere geodesics when R=1)
+        edge_x, edge_y, edge_z = [], [], []
+        rows, cols = np.where(np.triu(self.A, k=1) > 0)
+        for i, j in zip(rows, cols):
+            edge_x += [cx[i], cx[j], None]
+            edge_y += [cy[i], cy[j], None]
+            edge_z += [cz[i], cz[j], None]
+
+        # Path data for JavaScript
+        path_data = {}
+        for dest, path in path_by_node.items():
+            hop_dists = self.path_distances(path)
+            path_data[str(dest)] = {
+                'path': path,
+                'hop_dists': hop_dists,
+                'skr': skr_by_node[dest],
+                'qber': qber_by_node[dest],
+                'total_time': time_by_node[dest],
+                'total_dist': sum(hop_dists),
+            }
+
+        dist_label = self.distillation_type if self.distillation_type else 'none'
+
+        js_data = {
+            'source': source,
+            'cx': cx,
+            'cy': cy,
+            'cz': cz,
+            'node_colors': node_colors,
+            'skr_labels': node_skr_labels,
+            'edge_x': edge_x,
+            'edge_y': edge_y,
+            'edge_z': edge_z,
+            'path_data': path_data,
+            'scale_label': self.scale_label,
+            'architecture': self.architecture,
+            'dist_label': dist_label,
+            'log_min': log_min,
+            'log_max': log_max,
+            'sphere_radius': sphere_radius,
+        }
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(_build_html_3d(js_data))  # <--- Add the "_3d" here
+        print(f"Saved → {output_path}")
+
+    # ---------------------------------------------------------------------------
+    # HTML template — 3D globe
+    # ---------------------------------------------------------------------------
+
+def _build_html_3d(d):
+    """Return the full self-contained HTML string for the 3D globe view."""
+    data_json = json.dumps(d)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quantum Repeater Network — 3D Globe</title>
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+  :root {{
+    --bg:    #050810; --panel: #0b0f1a; --border: #1a2740;
+    --accent:#00d4ff; --green: #00ff9d; --gold:   #ffd700;
+    --red:   #ff3a3a; --text:  #c8d8e8; --dim:    #4a6080;
+    --mono:  'Share Tech Mono', monospace;
+    --sans:  'Rajdhani', sans-serif;
+  }}
+  * {{ box-sizing:border-box; margin:0; padding:0; }}
+  body {{ background:var(--bg); color:var(--text); font-family:var(--sans);
+          font-weight:300; height:100vh; display:flex; flex-direction:column; overflow:hidden; }}
+  header {{ padding:11px 22px; border-bottom:1px solid var(--border);
+            display:flex; align-items:baseline; gap:18px; flex-shrink:0; background:var(--panel); }}
+  header h1 {{ font-family:var(--mono); font-size:13px; color:var(--accent);
+               letter-spacing:0.18em; text-transform:uppercase; }}
+  header span {{ font-size:11px; color:var(--dim); font-family:var(--mono); }}
+  .main {{ display:flex; flex:1; overflow:hidden; }}
+  .panel {{ width:290px; flex-shrink:0; border-right:1px solid var(--border);
+            background:var(--panel); display:flex; flex-direction:column; overflow-y:auto; }}
+  .section {{ padding:18px 20px; border-bottom:1px solid var(--border); }}
+  .section h2 {{ font-family:var(--mono); font-size:9px; letter-spacing:0.22em;
+                 color:var(--dim); text-transform:uppercase; margin-bottom:13px; }}
+  .leg-row {{ display:flex; align-items:center; gap:9px; margin-bottom:7px; font-size:13px; }}
+  .leg-dot {{ width:11px; height:11px; border-radius:50%; flex-shrink:0; }}
+  .colorbar {{ height:10px; border-radius:3px;
+               background:linear-gradient(to right,rgb(0,80,0),rgb(0,255,100));
+               margin:7px 0 3px; }}
+  .cb-labels {{ display:flex; justify-content:space-between;
+                font-family:var(--mono); font-size:10px; color:var(--dim); }}
+  .hint {{ font-family:var(--mono); font-size:10px; color:var(--dim);
+           line-height:1.7; margin-top:10px; }}
+  #info-box {{ flex:1; padding:18px 20px; overflow-y:auto; }}
+  .placeholder {{ color:var(--dim); font-size:12px; line-height:1.9; font-family:var(--mono); }}
+  .placeholder::before {{ content:'> '; color:var(--accent); }}
+  .info-title {{ font-family:var(--mono); font-size:9px; letter-spacing:0.22em;
+                 color:var(--dim); text-transform:uppercase; margin-bottom:16px; }}
+  .metric {{ margin-bottom:15px; }}
+  .metric-label {{ font-size:9px; font-family:var(--mono); color:var(--dim);
+                   letter-spacing:0.12em; text-transform:uppercase; margin-bottom:3px; }}
+  .metric-value {{ font-family:var(--mono); font-size:17px; color:var(--green); }}
+  .metric-value.bad     {{ color:var(--red); }}
+  .metric-value.neutral {{ color:var(--text); }}
+  .hop-list {{ margin-top:16px; }}
+  .hop-list h3 {{ font-size:9px; font-family:var(--mono); color:var(--dim);
+                  letter-spacing:0.12em; text-transform:uppercase; margin-bottom:9px; }}
+  .hop-item {{ display:flex; align-items:center; gap:7px; margin-bottom:5px;
+               font-family:var(--mono); font-size:12px; }}
+  .hop-arrow {{ color:var(--accent); font-size:9px; }}
+  .hop-dist  {{ color:var(--dim); margin-left:auto; }}
+  #graph {{ flex:1; min-width:0; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>Quantum Repeater Network — 3D Globe</h1>
+  <span id="hdr"></span>
+</header>
+<div class="main">
+  <div class="panel">
+    <div class="section">
+      <h2>Legend</h2>
+      <div class="leg-row"><div class="leg-dot" style="background:var(--gold)"></div><span>Source node</span></div>
+      <div class="leg-row"><div class="leg-dot" style="background:rgb(200,40,40)"></div><span>SKR &le; 0</span></div>
+      <div class="leg-row"><div class="leg-dot" style="background:rgb(80,80,80)"></div><span>Unreachable</span></div>
+      <div style="margin-top:8px;">
+        <div class="colorbar"></div>
+        <div class="cb-labels">
+          <span id="skr-min"></span><span>SKR (bit/s, log)</span><span id="skr-max"></span>
+        </div>
+      </div>
+      <p class="hint">Drag to rotate · Scroll to zoom · Click node to inspect</p>
+    </div>
+    <div id="info-box"><p class="placeholder">Click a node to inspect its optimal path</p></div>
+  </div>
+  <div id="graph"></div>
+</div>
+<script>
+const D = {data_json};
+
+document.getElementById('hdr').textContent =
+  `source: node ${{D.source}}  ·  scale: ${{D.scale_label}}  ·  arch: ${{D.architecture}}  ·  distillation: ${{D.dist_label}}`;
+document.getElementById('skr-min').textContent = '10^' + D.log_min.toFixed(1);
+document.getElementById('skr-max').textContent = '10^' + D.log_max.toFixed(1);
+
+function fmtSKR(v) {{ return v == null ? '—' : v.toExponential(3) + ' bit/s'; }}
+
+// ── transparent sphere surface ────────────────────────────────────────────
+// Build a mesh grid of lat/lon points on the unit sphere, same as the
+// original plot_graph_on_sphere in network_funcs.
+const R = D.sphere_radius;
+const nPhi = 60, nTheta = 60;
+const sX=[], sY=[], sZ=[];
+for (let i=0; i<=nPhi; i++) {{
+  const phi = i/nPhi * 2*Math.PI;
+  const rowX=[], rowY=[], rowZ=[];
+  for (let j=0; j<=nTheta; j++) {{
+    const theta = j/nTheta * Math.PI;
+    rowX.push(R * Math.sin(theta) * Math.cos(phi));
+    rowY.push(R * Math.sin(theta) * Math.sin(phi));
+    rowZ.push(R * Math.cos(theta));
+  }}
+  sX.push(rowX); sY.push(rowY); sZ.push(rowZ);
+}}
+
+const trSphere = {{
+  type: 'surface',
+  x: sX, y: sY, z: sZ,
+  colorscale: [[0,'rgba(20,40,120,0.18)'],[1,'rgba(20,40,120,0.18)']],
+  showscale: false,
+  hoverinfo: 'skip',
+  name: 'globe',
+  lighting: {{ ambient:0.9, diffuse:0.1 }},
+}};
+
+// ── background edges ──────────────────────────────────────────────────────
+const trEdge = {{
+  type: 'scatter3d', mode: 'lines',
+  x: D.edge_x, y: D.edge_y, z: D.edge_z,
+  line: {{ color:'rgba(0,180,255,0.10)', width:1 }},
+  hoverinfo: 'skip', name: 'edges',
+}};
+
+// ── highlighted path — starts empty ──────────────────────────────────────
+const trPath = {{
+  type: 'scatter3d', mode: 'lines',
+  // GIVE IT TWO IDENTICAL POINTS SO THE 3D LINE SHADER DOESN'T CRASH
+  x: [D.cx[D.source], D.cx[D.source]], 
+  y: [D.cy[D.source], D.cy[D.source]], 
+  z: [D.cz[D.source], D.cz[D.source]], 
+  line: {{ color:'rgba(0,255,157,0.95)', width:5 }},
+  hoverinfo: 'skip', name: 'path',
+}};
+
+// ── nodes ─────────────────────────────────────────────────────────────────
+const trNode = {{
+  type: 'scatter3d', mode: 'markers',
+  x: D.cx, y: D.cy, z: D.cz,
+  marker: {{
+    size: 4,
+    color: D.node_colors,
+    line: {{ width: 0 }},
+  }},
+  text: D.skr_labels,
+  customdata: D.cx.map((_,i) => i),
+  hovertemplate:
+    '<b>Node %{{customdata}}</b><br>SKR: %{{text}}<extra></extra>',
+  name: 'nodes',
+}};
+
+const axStyle = {{
+  showgrid:false, zeroline:false, showline:false,
+  showticklabels:false, showbackground:false, title:'',
+}};
+
+const layout = {{
+  paper_bgcolor: '#050810',
+  margin: {{ t:0, b:0, l:0, r:0 }},
+  dragmode: false,
+  scene: {{
+    xaxis: axStyle, yaxis: axStyle, zaxis: axStyle,
+    bgcolor: '#050810',
+    camera: {{ eye:{{ x:1.6, y:1.6, z:0.8 }} }},
+    aspectmode: 'cube',
+    dragmode: 'orbit',
+  }},
+  showlegend: false,
+}};
+
+const graphDiv = document.getElementById('graph');
+Plotly.newPlot(graphDiv, [trSphere, trEdge, trPath, trNode], layout,
+  {{ scrollZoom:true, responsive:true, displayModeBar:true,
+     modeBarButtonsToRemove:['select2d','lasso2d','autoScale2d','resetCameraDefault3d'] }});
+
+// ── click handler ─────────────────────────────────────────────────────────
+graphDiv.on('plotly_click', function(ev) {{
+  const pt = ev.points[0];
+  // only respond to clicks on the node trace (index 3)
+  if (!pt || pt.data.name !== 'nodes') return;
+
+  // customdata holds the node index; JSON keys are strings so use String()
+  const idx = pt.customdata;
+  if (idx === D.source) return;
+
+  const pd = D.path_data[String(idx)];
+
+  if (!pd) {{
+    // Use Plotly.update (not restyle) so 3D camera/drag state is preserved
+    Plotly.update(graphDiv,
+      {{ x: [[D.cx[D.source], D.cx[D.source]]],
+         y: [[D.cy[D.source], D.cy[D.source]]],
+         z: [[D.cz[D.source], D.cz[D.source]]] }},
+      {{}}, [2]);
+    document.getElementById('info-box').innerHTML =
+      `<p class="info-title">Node ${{idx}}</p>
+       <div class="metric"><div class="metric-label">Status</div>
+       <div class="metric-value bad">Unreachable</div></div>`;
+    return;
+  }}
+
+  // Build path edge coords in 3D
+  const path = pd.path;
+  const px=[], py=[], pz=[];
+  for (let i=0; i<path.length-1; i++) {{
+    px.push(D.cx[path[i]], D.cx[path[i+1]], null);
+    py.push(D.cy[path[i]], D.cy[path[i+1]], null);
+    pz.push(D.cz[path[i]], D.cz[path[i+1]], null);
+  }}
+  // Use Plotly.update to avoid resetting the 3D drag/orbit state
+  Plotly.update(graphDiv, {{ x:[px], y:[py], z:[pz] }}, {{}}, [2]);
+
+  // Build hop detail rows
+  let hopHtml='';
+  for (let i=0; i<path.length-1; i++) {{
+    hopHtml += `<div class="hop-item">
+      <span>${{path[i]}}</span><span class="hop-arrow">──▶</span>
+      <span>${{path[i+1]}}</span>
+      <span class="hop-dist">${{pd.hop_dists[i].toFixed(2)}} km</span></div>`;
+  }}
+
+  document.getElementById('info-box').innerHTML = `
+    <p class="info-title">Node ${{D.source}} &rarr; Node ${{idx}}</p>
+    <div class="metric"><div class="metric-label">Secret Key Rate</div>
+      <div class="metric-value ${{pd.skr>0?'':'bad'}}">${{fmtSKR(pd.skr)}}</div></div>
+    <div class="metric"><div class="metric-label">QBER</div>
+      <div class="metric-value neutral">${{(pd.qber*100).toFixed(3)}} %</div></div>
+    <div class="metric"><div class="metric-label">Hops</div>
+      <div class="metric-value neutral">${{path.length-1}}</div></div>
+    <div class="metric"><div class="metric-label">Total distance</div>
+      <div class="metric-value neutral">${{pd.total_dist.toFixed(2)}} km</div></div>
+    <div class="hop-list"><h3>Path detail</h3>${{hopHtml}}</div>`;
+}});
+</script>
+</body>
+</html>"""
+
+
+# ---------------------------------------------------------------------------
+# HTML template — 2D flat map
+# ---------------------------------------------------------------------------
+
+def _build_html(d):
+    data_json = json.dumps(d)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quantum Repeater Network</title>
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+  :root {{
+    --bg:    #050810; --panel: #0b0f1a; --border: #1a2740;
+    --accent:#00d4ff; --green: #00ff9d; --gold:   #ffd700;
+    --red:   #ff3a3a; --text:  #c8d8e8; --dim:    #4a6080;
+    --mono:  'Share Tech Mono', monospace;
+    --sans:  'Rajdhani', sans-serif;
+  }}
+  * {{ box-sizing:border-box; margin:0; padding:0; }}
+  body {{ background:var(--bg); color:var(--text); font-family:var(--sans);
+          font-weight:300; height:100vh; display:flex; flex-direction:column; overflow:hidden; }}
+  header {{ padding:11px 22px; border-bottom:1px solid var(--border);
+            display:flex; align-items:baseline; gap:18px; flex-shrink:0; background:var(--panel); }}
+  header h1 {{ font-family:var(--mono); font-size:13px; color:var(--accent);
+               letter-spacing:0.18em; text-transform:uppercase; }}
+  header span {{ font-size:11px; color:var(--dim); font-family:var(--mono); }}
+  .main {{ display:flex; flex:1; overflow:hidden; }}
+  .panel {{ width:290px; flex-shrink:0; border-right:1px solid var(--border);
+            background:var(--panel); display:flex; flex-direction:column; overflow-y:auto; }}
+  .section {{ padding:18px 20px; border-bottom:1px solid var(--border); }}
+  .section h2 {{ font-family:var(--mono); font-size:9px; letter-spacing:0.22em;
+                 color:var(--dim); text-transform:uppercase; margin-bottom:13px; }}
+  .leg-row {{ display:flex; align-items:center; gap:9px; margin-bottom:7px; font-size:13px; }}
+  .leg-dot {{ width:11px; height:11px; border-radius:50%; flex-shrink:0; }}
+  .colorbar {{ height:10px; border-radius:3px;
+               background:linear-gradient(to right,rgb(0,80,0),rgb(0,255,100));
+               margin:7px 0 3px; }}
+  .cb-labels {{ display:flex; justify-content:space-between;
+                font-family:var(--mono); font-size:10px; color:var(--dim); }}
+  #info-box {{ flex:1; padding:18px 20px; overflow-y:auto; }}
+  .placeholder {{ color:var(--dim); font-size:12px; line-height:1.9; font-family:var(--mono); }}
+  .placeholder::before {{ content:'> '; color:var(--accent); }}
+  .info-title {{ font-family:var(--mono); font-size:9px; letter-spacing:0.22em;
+                 color:var(--dim); text-transform:uppercase; margin-bottom:16px; }}
+  .metric {{ margin-bottom:15px; }}
+  .metric-label {{ font-size:9px; font-family:var(--mono); color:var(--dim);
+                   letter-spacing:0.12em; text-transform:uppercase; margin-bottom:3px; }}
+  .metric-value {{ font-family:var(--mono); font-size:17px; color:var(--green); }}
+  .metric-value.bad     {{ color:var(--red); }}
+  .metric-value.neutral {{ color:var(--text); }}
+  .hop-list {{ margin-top:16px; }}
+  .hop-list h3 {{ font-size:9px; font-family:var(--mono); color:var(--dim);
+                  letter-spacing:0.12em; text-transform:uppercase; margin-bottom:9px; }}
+  .hop-item {{ display:flex; align-items:center; gap:7px; margin-bottom:5px;
+               font-family:var(--mono); font-size:12px; }}
+  .hop-arrow {{ color:var(--accent); font-size:9px; }}
+  .hop-dist  {{ color:var(--dim); margin-left:auto; }}
+  #graph {{ flex:1; min-width:0; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>Quantum Repeater Network</h1>
+  <span id="hdr"></span>
+</header>
+<div class="main">
+  <div class="panel">
+    <div class="section">
+      <h2>Legend</h2>
+      <div class="leg-row"><div class="leg-dot" style="background:var(--gold)"></div><span>Source node</span></div>
+      <div class="leg-row"><div class="leg-dot" style="background:rgb(200,40,40)"></div><span>SKR &le; 0</span></div>
+      <div class="leg-row"><div class="leg-dot" style="background:rgb(80,80,80)"></div><span>Unreachable</span></div>
+      <div style="margin-top:8px;">
+        <div class="colorbar"></div>
+        <div class="cb-labels">
+          <span id="skr-min"></span><span>SKR (bit/s, log)</span><span id="skr-max"></span>
+        </div>
+      </div>
+    </div>
+    <div id="info-box"><p class="placeholder">Click a node to inspect its optimal path</p></div>
+  </div>
+  <div id="graph"></div>
+</div>
+<script>
+const D = {data_json};
+document.getElementById('hdr').textContent =
+  `source: node ${{D.source}}  ·  scale: ${{D.scale_label}}  ·  arch: ${{D.architecture}}  ·  distillation: ${{D.dist_label}}`;
+document.getElementById('skr-min').textContent = '10^' + D.log_min.toFixed(1);
+document.getElementById('skr-max').textContent = '10^' + D.log_max.toFixed(1);
+
+function fmtSKR(v) {{ return v == null ? '—' : v.toExponential(3) + ' bit/s'; }}
+
+const trEdge = {{ type:'scatter', mode:'lines', x:D.edge_x, y:D.edge_y,
+  line:{{ color:'rgba(0,180,255,0.07)', width:0.8 }}, hoverinfo:'skip', name:'edges' }};
+const trPath = {{ type:'scatter', mode:'lines', x:[], y:[],
+  line:{{ color:'rgba(0,255,157,0.9)', width:3 }}, hoverinfo:'skip', name:'path' }};
+const trNode = {{ type:'scatter', mode:'markers', x:D.x, y:D.y,
+  marker:{{ size:6, color:D.node_colors, line:{{ width:0 }} }},
+  text:D.skr_labels, customdata:D.x.map((_,i)=>i),
+  hovertemplate:'<b>Node %{{customdata}}</b><br>SKR: %{{text}}<br>(%{{x:.1f}} km, %{{y:.1f}} km)<extra></extra>',
+  name:'nodes' }};
+
+const layout = {{
+  paper_bgcolor:'#050810', plot_bgcolor:'#050810',
+  margin:{{ t:10, b:10, l:10, r:10 }},
+  xaxis:{{ title:{{ text:'km', font:{{ color:'#4a6080', size:11 }} }},
+           gridcolor:'#0d1825', zerolinecolor:'#1a2740',
+           tickfont:{{ color:'#4a6080', size:10 }}, color:'#4a6080' }},
+  yaxis:{{ title:{{ text:'km', font:{{ color:'#4a6080', size:11 }} }},
+           gridcolor:'#0d1825', zerolinecolor:'#1a2740',
+           tickfont:{{ color:'#4a6080', size:10 }}, color:'#4a6080',
+           scaleanchor:'x', scaleratio:1 }},
+  showlegend:false, dragmode:'pan'
+}};
+
+Plotly.newPlot('graph', [trEdge, trPath, trNode], layout,
+  {{ scrollZoom:true, responsive:true, displayModeBar:true,
+     modeBarButtonsToRemove:['select2d','lasso2d','autoScale2d'] }});
+
+document.getElementById('graph').on('plotly_click', function(ev) {{
+  const pt = ev.points[0];
+  if (!pt || pt.data.name !== 'nodes') return;
+  const idx = pt.customdata;
+  if (idx === D.source) return;
+  const pd = D.path_data[idx];
+
+  if (!pd) {{
+    Plotly.restyle('graph', {{ x:[[]], y:[[]] }}, [1]);
+    document.getElementById('info-box').innerHTML =
+      `<p class="info-title">Node ${{idx}}</p>
+       <div class="metric"><div class="metric-label">Status</div>
+       <div class="metric-value bad">Unreachable</div></div>`;
+    return;
+  }}
+
+  const path = pd.path;
+  const px=[], py=[];
+  for (let i=0; i<path.length-1; i++) {{
+    px.push(D.x[path[i]], D.x[path[i+1]], null);
+    py.push(D.y[path[i]], D.y[path[i+1]], null);
+  }}
+  Plotly.restyle('graph', {{ x:[px], y:[py] }}, [1]);
+
+  let hopHtml='';
+  for (let i=0; i<path.length-1; i++) {{
+    hopHtml += `<div class="hop-item">
+      <span>${{path[i]}}</span><span class="hop-arrow">──▶</span>
+      <span>${{path[i+1]}}</span>
+      <span class="hop-dist">${{pd.hop_dists[i].toFixed(2)}} km</span></div>`;
+  }}
+
+  document.getElementById('info-box').innerHTML = `
+    <p class="info-title">Node ${{D.source}} &rarr; Node ${{idx}}</p>
+    <div class="metric"><div class="metric-label">Secret Key Rate</div>
+      <div class="metric-value ${{pd.skr>0?'':'bad'}}">${{fmtSKR(pd.skr)}}</div></div>
+    <div class="metric"><div class="metric-label">QBER</div>
+      <div class="metric-value neutral">${{(pd.qber*100).toFixed(3)}} %</div></div>
+    <div class="metric"><div class="metric-label">Hops</div>
+      <div class="metric-value neutral">${{path.length-1}}</div></div>
+    <div class="metric"><div class="metric-label">Total distance</div>
+      <div class="metric-value neutral">${{pd.total_dist.toFixed(2)}} km</div></div>
+    <div class="hop-list"><h3>Path detail</h3>${{hopHtml}}</div>`;
+}});
+</script>
+</body>
+</html>"""

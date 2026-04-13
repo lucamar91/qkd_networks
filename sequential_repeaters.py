@@ -246,13 +246,12 @@ class QuantumRepeaterNetwork:
     """
 
     def __init__(self, params, A, dist, coords=None,
-                 architecture='node', scale='city', decoherence=False, distillation_type=None):
+                 architecture='node', scale='city', distillation_type=None):
         self.params       = params
         self.A            = A
         self.dist         = dist
         self.coords       = coords
         self.architecture = architecture
-        self.decoherence = decoherence
         self.distillation_type = distillation_type
 
         # Resolve scale factor for coordinate projection
