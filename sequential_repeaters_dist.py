@@ -422,6 +422,102 @@ class QuantumRepeaterNetwork:
         SKR   = R * (1 - 2 * H)
         return R_raw, QBER, SKR
 
+    def calculate_metrics_dbs(self, path):
+        """
+        Compute total time T, end-to-end QBER, and SKR for *path*,
+        incorporating coherence decay and optional distillation.
+
+        The recurrence over hops i = 1 … N-1:
+          1. Generate link (a→b): T += 1/p_ent(a,b), divided by P_BSM.
+          2. Apply decoherence: W_swap = W_prev * exp(-T_link/T_coh) * W_link(a,b).
+          3. If distillation is enabled, apply BBPSSW and update T accordingly.
+
+        Parameters
+        ----------
+        path : list of int   Ordered node indices.
+
+        Returns
+        -------
+        R_raw    : float   Entanglement generation rate
+        QBER : float   End-to-end QBER.
+        SKR  : float   Secret key rate [bit/s].
+        """
+        p = self.params
+
+        # ── first link ───────────────────────────────────────────────
+        a, b = path[0], path[1]
+        T    = 1.0 / self.Probs_mtx[a, b]
+        Q    = self.Q_link(a, b)
+        W    = 1 - 2 * Q   # Werner-state visibility after first link
+
+        # 1. DISTILL THE ELEMENTARY LINK (BEFORE THE SWAP)
+        if self.distillation_type == 'multiplexing':
+            F_link = (1 + 3 * W) / 4
+            F_link_out, P_suc_link = BBPSSW(F_link, F_link)
+            T = (1.5 * T) / P_suc_link  # Parallel generation
+            W = (4 * F_link_out - 1) / 3
+
+        elif self.distillation_type == 'standard':
+            # Sequential: Pair 1 waits for T_link while Pair 2 generates
+            W_aged = W * np.exp(-(T / p.nu) / p.T_coh)
+            F_aged = (1 + 3 * W_aged) / 4
+            F_fresh = (1 + 3 * W) / 4
+            F_link_out, P_suc_link = BBPSSW(F_aged, F_fresh)
+            T = (2 * T) / P_suc_link  # Sequential generation
+            W = (4 * F_link_out - 1) / 3
+
+        elif self.distillation_type is None:
+            pass  # W_link remains unchanged
+        else:
+            raise ValueError(
+                "distillation_type must be 'multiplexing', 'standard', or None"
+            )
+        # ── subsequent links ─────────────────────────────────────────
+        for i in range(2, len(path)):
+            a, b = path[i - 1], path[i]
+            T_link = 1.0 / self.Probs_mtx[a, b]
+            Q_new = self.Q_link(a, b)
+            W_link = 1 - 2 * Q_new
+
+            # 1. DISTILL THE ELEMENTARY LINK (BEFORE THE SWAP)
+            if self.distillation_type == 'multiplexing':
+                F_link = (1 + 3 * W_link) / 4
+                F_link_out, P_suc_link = BBPSSW(F_link, F_link)
+                T_link = (1.5 * T_link) / P_suc_link  # Parallel generation
+                W_link = (4 * F_link_out - 1) / 3
+
+            elif self.distillation_type == 'standard':
+                # Sequential: Pair 1 waits for T_link while Pair 2 generates
+                W_aged = W_link * np.exp(-(T_link / p.nu) / p.T_coh)
+                F_aged = (1 + 3 * W_aged) / 4
+                F_fresh = (1 + 3 * W_link) / 4
+                F_link_out, P_suc_link = BBPSSW(F_aged, F_fresh)
+                T_link = (2 * T_link) / P_suc_link  # Sequential generation
+                W_link = (4 * F_link_out - 1) / 3
+
+            elif self.distillation_type is None:
+                pass  # W_link remains unchanged
+            else:
+                raise ValueError(
+                    "distillation_type must be 'multiplexing', 'standard', or None"
+                )
+
+            # 2. PERFORM THE SWAP (Sequential Wait & Decoherence)
+            # The accumulated chain 'W' waits while this newly purified link is generated
+            T = (T + T_link) / p.P_BSM
+            W_swap = W * np.exp(-(T_link / p.nu) / p.T_coh) * W_link
+
+            # 3. UPDATE THE CHAIN
+            W = W_swap
+
+
+        QBER  = (1 - W) / 2
+        R_raw = self.entanglement_rate(T)
+        R     = 0.5 * R_raw          # factor 0.5: one pair consumed per BSM
+        H     = binary_entropy(QBER)
+        SKR   = R * (1 - 2 * H)
+        return R_raw, QBER, SKR
+
     def path_distances(self, path):
         """
         Physical distance of each hop along *path* [km].
@@ -459,7 +555,7 @@ class QuantumRepeaterNetwork:
 
         records = []
         for dest, path in paths.items():
-            T, Q, SKR = self.calculate_metrics(path)
+            T, Q, SKR = self.calculate_metrics_dbs(path)
             records.append({
                 'total_time': T,
                 'Q':          Q,
