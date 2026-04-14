@@ -365,7 +365,7 @@ class QuantumRepeaterNetwork:
 
         Returns
         -------
-        T    : float   Total expected rounds.
+        R_raw    : float   Entanglement generation rate
         QBER : float   End-to-end QBER.
         SKR  : float   Secret key rate [bit/s].
         """
@@ -420,7 +420,7 @@ class QuantumRepeaterNetwork:
         R     = 0.5 * R_raw          # factor 0.5: one pair consumed per BSM
         H     = binary_entropy(QBER)
         SKR   = R * (1 - 2 * H)
-        return T, QBER, SKR
+        return R_raw, QBER, SKR
 
     def path_distances(self, path):
         """
@@ -568,6 +568,7 @@ class QuantumRepeaterNetwork:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(_build_html(js_data))
         print(f"Saved → {output_path}")
+
     def export_html_3d(self, source, output_path="repeater_viz_3d.html",
                        sphere_radius=1.0):
         """
@@ -688,6 +689,9 @@ class QuantumRepeaterNetwork:
 
 def _build_html_3d(d):
     """Return the full self-contained HTML string for the 3D globe view."""
+    # String-key path_data so JS lookup with String(idx) always works
+    d = dict(d)
+    d['path_data'] = {str(k): v for k, v in d['path_data'].items()}
     data_json = json.dumps(d)
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -784,32 +788,38 @@ document.getElementById('skr-max').textContent = '10^' + D.log_max.toFixed(1);
 
 function fmtSKR(v) {{ return v == null ? '—' : v.toExponential(3) + ' bit/s'; }}
 
-// ── transparent sphere surface ────────────────────────────────────────────
-// Build a mesh grid of lat/lon points on the unit sphere, same as the
-// original plot_graph_on_sphere in network_funcs.
+// ── globe wireframe (latitude/longitude lines, no surface trace) ───────────
+// A surface trace blocks click events on scatter3d nodes underneath it.
+// Instead we draw thin lat/lon lines as scatter3d so clicks pass through.
 const R = D.sphere_radius;
-const nPhi = 60, nTheta = 60;
-const sX=[], sY=[], sZ=[];
-for (let i=0; i<=nPhi; i++) {{
-  const phi = i/nPhi * 2*Math.PI;
-  const rowX=[], rowY=[], rowZ=[];
-  for (let j=0; j<=nTheta; j++) {{
-    const theta = j/nTheta * Math.PI;
-    rowX.push(R * Math.sin(theta) * Math.cos(phi));
-    rowY.push(R * Math.sin(theta) * Math.sin(phi));
-    rowZ.push(R * Math.cos(theta));
+const wireX = [], wireY = [], wireZ = [];
+const NL = 18; // number of lat/lon lines each
+for (let i = 0; i < NL; i++) {{
+  const phi = i / NL * 2 * Math.PI;   // longitude lines
+  for (let j = 0; j <= 60; j++) {{
+    const t = j / 60 * Math.PI;
+    wireX.push(R * Math.sin(t) * Math.cos(phi));
+    wireY.push(R * Math.sin(t) * Math.sin(phi));
+    wireZ.push(R * Math.cos(t));
   }}
-  sX.push(rowX); sY.push(rowY); sZ.push(rowZ);
+  wireX.push(null); wireY.push(null); wireZ.push(null);
+}}
+for (let i = 1; i < NL - 1; i++) {{  // latitude lines (skip poles)
+  const theta = i / NL * Math.PI;
+  for (let j = 0; j <= 60; j++) {{
+    const phi = j / 60 * 2 * Math.PI;
+    wireX.push(R * Math.sin(theta) * Math.cos(phi));
+    wireY.push(R * Math.sin(theta) * Math.sin(phi));
+    wireZ.push(R * Math.cos(theta));
+  }}
+  wireX.push(null); wireY.push(null); wireZ.push(null);
 }}
 
-const trSphere = {{
-  type: 'surface',
-  x: sX, y: sY, z: sZ,
-  colorscale: [[0,'rgba(20,40,120,0.18)'],[1,'rgba(20,40,120,0.18)']],
-  showscale: false,
-  hoverinfo: 'skip',
-  name: 'globe',
-  lighting: {{ ambient:0.9, diffuse:0.1 }},
+const trGlobe = {{
+  type: 'scatter3d', mode: 'lines',
+  x: wireX, y: wireY, z: wireZ,
+  line: {{ color: 'rgba(30,60,160,0.22)', width: 1 }},
+  hoverinfo: 'skip', name: 'globe',
 }};
 
 // ── background edges ──────────────────────────────────────────────────────
@@ -820,30 +830,26 @@ const trEdge = {{
   hoverinfo: 'skip', name: 'edges',
 }};
 
-// ── highlighted path — starts empty ──────────────────────────────────────
-const trPath = {{
+// ── highlighted path — kept as a separate mutable trace (index 2) ─────────
+// Seed with two identical points so the line shader never sees an empty array.
+let pathTrace = {{
   type: 'scatter3d', mode: 'lines',
-  // GIVE IT TWO IDENTICAL POINTS SO THE 3D LINE SHADER DOESN'T CRASH
-  x: [D.cx[D.source], D.cx[D.source]], 
-  y: [D.cy[D.source], D.cy[D.source]], 
-  z: [D.cz[D.source], D.cz[D.source]], 
+  x: [D.cx[D.source], D.cx[D.source]],
+  y: [D.cy[D.source], D.cy[D.source]],
+  z: [D.cz[D.source], D.cz[D.source]],
   line: {{ color:'rgba(0,255,157,0.95)', width:5 }},
   hoverinfo: 'skip', name: 'path',
 }};
 
 // ── nodes ─────────────────────────────────────────────────────────────────
+// Store node indices in customdata so we can retrieve them on click.
 const trNode = {{
   type: 'scatter3d', mode: 'markers',
   x: D.cx, y: D.cy, z: D.cz,
-  marker: {{
-    size: 4,
-    color: D.node_colors,
-    line: {{ width: 0 }},
-  }},
+  marker: {{ size:4, color:D.node_colors, line:{{ width:0 }} }},
   text: D.skr_labels,
   customdata: D.cx.map((_,i) => i),
-  hovertemplate:
-    '<b>Node %{{customdata}}</b><br>SKR: %{{text}}<extra></extra>',
+  hovertemplate: '<b>Node %{{customdata}}</b><br>SKR: %{{text}}<extra></extra>',
   name: 'nodes',
 }};
 
@@ -855,41 +861,45 @@ const axStyle = {{
 const layout = {{
   paper_bgcolor: '#050810',
   margin: {{ t:0, b:0, l:0, r:0 }},
-  dragmode: false,
   scene: {{
     xaxis: axStyle, yaxis: axStyle, zaxis: axStyle,
     bgcolor: '#050810',
     camera: {{ eye:{{ x:1.6, y:1.6, z:0.8 }} }},
     aspectmode: 'cube',
-    dragmode: 'orbit',
   }},
   showlegend: false,
 }};
 
+// traces: 0=globe, 1=edges, 2=path, 3=nodes
+const traces = [trGlobe, trEdge, pathTrace, trNode];
 const graphDiv = document.getElementById('graph');
-Plotly.newPlot(graphDiv, [trSphere, trEdge, trPath, trNode], layout,
-  {{ scrollZoom:true, responsive:true, displayModeBar:true,
-     modeBarButtonsToRemove:['select2d','lasso2d','autoScale2d','resetCameraDefault3d'] }});
+Plotly.newPlot(graphDiv, traces, layout,
+  {{ scrollZoom:true, responsive:true, displayModeBar:true }});
 
 // ── click handler ─────────────────────────────────────────────────────────
+// We use Plotly.react() to update data — it diffs and patches the scene
+// without destroying the camera or drag bindings, unlike restyle/update.
 graphDiv.on('plotly_click', function(ev) {{
   const pt = ev.points[0];
-  // only respond to clicks on the node trace (index 3)
   if (!pt || pt.data.name !== 'nodes') return;
 
-  // customdata holds the node index; JSON keys are strings so use String()
-  const idx = pt.customdata;
+  const idx = pt.customdata;   // integer node index stored in customdata
   if (idx === D.source) return;
 
-  const pd = D.path_data[String(idx)];
+  const pd = D.path_data[String(idx)];  // keys are strings after JSON round-trip
+
+  // Snapshot current camera so Plotly.react doesn't reset the view
+  const cam = graphDiv.layout.scene.camera;
 
   if (!pd) {{
-    // Use Plotly.update (not restyle) so 3D camera/drag state is preserved
-    Plotly.update(graphDiv,
-      {{ x: [[D.cx[D.source], D.cx[D.source]]],
-         y: [[D.cy[D.source], D.cy[D.source]]],
-         z: [[D.cz[D.source], D.cz[D.source]]] }},
-      {{}}, [2]);
+    // Reset path trace to invisible stub, preserve camera
+    traces[2] = Object.assign({{}}, pathTrace, {{
+      x: [D.cx[D.source], D.cx[D.source]],
+      y: [D.cy[D.source], D.cy[D.source]],
+      z: [D.cz[D.source], D.cz[D.source]],
+    }});
+    Plotly.react(graphDiv, traces,
+      Object.assign({{}}, layout, {{ scene: Object.assign({{}}, layout.scene, {{ camera: cam }}) }}));
     document.getElementById('info-box').innerHTML =
       `<p class="info-title">Node ${{idx}}</p>
        <div class="metric"><div class="metric-label">Status</div>
@@ -897,20 +907,23 @@ graphDiv.on('plotly_click', function(ev) {{
     return;
   }}
 
-  // Build path edge coords in 3D
+  // Build 3D path polyline with null separators between hops
   const path = pd.path;
   const px=[], py=[], pz=[];
-  for (let i=0; i<path.length-1; i++) {{
+  for (let i = 0; i < path.length - 1; i++) {{
     px.push(D.cx[path[i]], D.cx[path[i+1]], null);
     py.push(D.cy[path[i]], D.cy[path[i+1]], null);
     pz.push(D.cz[path[i]], D.cz[path[i+1]], null);
   }}
-  // Use Plotly.update to avoid resetting the 3D drag/orbit state
-  Plotly.update(graphDiv, {{ x:[px], y:[py], z:[pz] }}, {{}}, [2]);
 
-  // Build hop detail rows
-  let hopHtml='';
-  for (let i=0; i<path.length-1; i++) {{
+  // Patch the path trace in-place and re-render, preserving camera
+  traces[2] = Object.assign({{}}, pathTrace, {{ x:px, y:py, z:pz }});
+  Plotly.react(graphDiv, traces,
+    Object.assign({{}}, layout, {{ scene: Object.assign({{}}, layout.scene, {{ camera: cam }}) }}));
+
+  // Build hop rows for side panel
+  let hopHtml = '';
+  for (let i = 0; i < path.length - 1; i++) {{
     hopHtml += `<div class="hop-item">
       <span>${{path[i]}}</span><span class="hop-arrow">──▶</span>
       <span>${{path[i+1]}}</span>
