@@ -235,13 +235,15 @@ class QuantumRepeaterNetwork:
 
     def __init__(self, params, A, dist, coords=None,
                  architecture='node', scale='city',
-                 distillation_type=None):
+                 distillation_type=None, distillation_level=1, distillation_time='before_swap'):
         self.params            = params
         self.A                 = A
         self.dist              = dist
         self.coords            = coords
         self.architecture      = architecture
         self.distillation_type = distillation_type
+        self.distillation_level = distillation_level
+        self.distillation_time = distillation_time
 
         if isinstance(scale, str):
             self.scale_km    = _SCALE_FACTORS[scale.lower()]
@@ -377,139 +379,104 @@ class QuantumRepeaterNetwork:
         Q    = self.Q_link(a, b)
         W    = 1 - 2 * Q   # Werner-state visibility after first link
 
-        # ── subsequent links ─────────────────────────────────────────
-        for i in range(2, len(path)):
-            a, b   = path[i - 1], path[i]
-            T_link = 1.0 / self.Probs_mtx[a, b]
+        if self.distillation_time == 'before_swap':
+            for level in range(self.distillation_level):
+                # 1. DISTILL THE ELEMENTARY LINK (BEFORE THE SWAP)
+                if self.distillation_type == 'multiplexing':
+                    F_link = (1 + 3 * W) / 4
+                    F_link_out, P_suc_link = BBPSSW(F_link, F_link)
+                    T = (1.5 * T) / P_suc_link  # Parallel generation
+                    W = (4 * F_link_out - 1) / 3
 
-            # Sequential wait: accumulate time, divide by P_BSM for swap
-            T = (T + T_link) / p.P_BSM
+                elif self.distillation_type == 'standard':
+                    # Sequential: Pair 1 waits for T_link while Pair 2 generates
+                    W_aged = W * np.exp(-(T / p.nu) / p.T_coh)
+                    F_aged = (1 + 3 * W_aged) / 4
+                    F_fresh = (1 + 3 * W) / 4
+                    F_link_out, P_suc_link = BBPSSW(F_aged, F_fresh)
+                    T = (2 * T) / P_suc_link  # Sequential generation
+                    W = (4 * F_link_out - 1) / 3
 
-            Q_new  = self.Q_link(a, b)
-            W_link = 1 - 2 * Q_new
+                elif self.distillation_type is None:
+                    pass  # W_link remains unchanged
+                else:
+                    raise ValueError(
+                        "distillation_type must be 'multiplexing', 'standard', or None"
+                    )
 
-            # Coherence decay of the already-stored pair during T_link
-            W_swap = W * np.exp(-(T_link / p.nu) / p.T_coh) * W_link
+            # ── subsequent links ─────────────────────────────────────────
+            for i in range(2, len(path)):
+                a, b = path[i - 1], path[i]
+                T_link = 1.0 / self.Probs_mtx[a, b]
+                Q_new = self.Q_link(a, b)
+                W_link = 1 - 2 * Q_new
 
-            if self.distillation_type == 'multiplexing':
-                # Both pairs freshly generated → same fidelity
-                F1 = F2 = (1 + 3 * W_swap) / 4
-                F_out, P_suc = BBPSSW(F1, F2)
-                T = T / P_suc
-                W = (4 * F_out - 1) / 3
+                for level in range(self.distillation_level):
 
-            elif self.distillation_type == 'standard':
-                # One pair aged for time T, the other is fresh
-                W1 = W_swap * np.exp(-(T / p.nu) / p.T_coh)
-                F1   = (1 + 3 * W1)    / 4
-                F2   = (1 + 3 * W_swap) / 4
-                F_out, P_suc = BBPSSW(F1, F2)
-                T = 2 * T / P_suc
-                W = (4 * F_out - 1) / 3
+                    if self.distillation_type == 'multiplexing':
+                        F_link = (1 + 3 * W_link) / 4
+                        F_link_out, P_suc_link = BBPSSW(F_link, F_link)
+                        T_link = (1.5 * T_link) / P_suc_link  # Parallel generation
+                        W_link = (4 * F_link_out - 1) / 3
 
-            elif self.distillation_type is None:
+                    elif self.distillation_type == 'standard':
+                        # Sequential: Pair 1 waits for T_link while Pair 2 generates
+                        W_aged = W_link * np.exp(-(T_link / p.nu) / p.T_coh)
+                        F_aged = (1 + 3 * W_aged) / 4
+                        F_fresh = (1 + 3 * W_link) / 4
+                        F_link_out, P_suc_link = BBPSSW(F_aged, F_fresh)
+                        T_link = (2 * T_link) / P_suc_link  # Sequential generation
+                        W_link = (4 * F_link_out - 1) / 3
+
+                # 2. PERFORM THE SWAP (Sequential Wait & Decoherence)
+                # The accumulated chain 'W' waits while this newly purified link is generated
+                T = (T + T_link) / p.P_BSM
+                W_swap = W * np.exp(-(T_link / p.nu) / p.T_coh) * W_link
+
+                # 3. UPDATE THE CHAIN
                 W = W_swap
+        elif self.distillation_time == 'after_swap':
+            # ── subsequent links ─────────────────────────────────────────
+            for i in range(2, len(path)):
+                a, b   = path[i - 1], path[i]
+                T_link = 1.0 / self.Probs_mtx[a, b]
 
-            else:
-                raise ValueError(
-                    "distillation_type must be 'multiplexing', 'standard', or None"
-                )
+                # Sequential wait: accumulate time, divide by P_BSM for swap
+                T = (T + T_link) / p.P_BSM
 
-        QBER  = (1 - W) / 2
-        R_raw = self.entanglement_rate(T)
-        R     = 0.5 * R_raw          # factor 0.5: one pair consumed per BSM
-        H     = binary_entropy(QBER)
-        SKR   = R * (1 - 2 * H)
-        return R_raw, QBER, SKR
+                Q_new  = self.Q_link(a, b)
+                W_link = 1 - 2 * Q_new
 
-    def calculate_metrics_dbs(self, path):
-        """
-        Compute total time T, end-to-end QBER, and SKR for *path*,
-        incorporating coherence decay and optional distillation.
+                # Coherence decay of the already-stored pair during T_link
+                W = W * np.exp(-(T_link / p.nu) / p.T_coh) * W_link
 
-        The recurrence over hops i = 1 … N-1:
-          1. Generate link (a→b): T += 1/p_ent(a,b), divided by P_BSM.
-          2. Apply decoherence: W_swap = W_prev * exp(-T_link/T_coh) * W_link(a,b).
-          3. If distillation is enabled, apply BBPSSW and update T accordingly.
+                for level in range(self.distillation_level):
 
-        Parameters
-        ----------
-        path : list of int   Ordered node indices.
+                    if self.distillation_type == 'multiplexing':
+                        # Both pairs freshly generated → same fidelity
+                        F1 = F2 = (1 + 3 * W) / 4
+                        F_out, P_suc = BBPSSW(F1, F2)
+                        T = 1.5 * T / P_suc
+                        W = (4 * F_out - 1) / 3
 
-        Returns
-        -------
-        R_raw    : float   Entanglement generation rate
-        QBER : float   End-to-end QBER.
-        SKR  : float   Secret key rate [bit/s].
-        """
-        p = self.params
+                    elif self.distillation_type == 'standard':
+                        # One pair aged for time T, the other is fresh
+                        W1 = W * np.exp(-(T / p.nu) / p.T_coh)
+                        F1   = (1 + 3 * W1)    / 4
+                        F2   = (1 + 3 * W) / 4
+                        F_out, P_suc = BBPSSW(F1, F2)
+                        T = 2 * T / P_suc
+                        W = (4 * F_out - 1) / 3
 
-        # ── first link ───────────────────────────────────────────────
-        a, b = path[0], path[1]
-        T    = 1.0 / self.Probs_mtx[a, b]
-        Q    = self.Q_link(a, b)
-        W    = 1 - 2 * Q   # Werner-state visibility after first link
+                    elif self.distillation_type is None:
+                        pass
 
-        # 1. DISTILL THE ELEMENTARY LINK (BEFORE THE SWAP)
-        if self.distillation_type == 'multiplexing':
-            F_link = (1 + 3 * W) / 4
-            F_link_out, P_suc_link = BBPSSW(F_link, F_link)
-            T = (1.5 * T) / P_suc_link  # Parallel generation
-            W = (4 * F_link_out - 1) / 3
-
-        elif self.distillation_type == 'standard':
-            # Sequential: Pair 1 waits for T_link while Pair 2 generates
-            W_aged = W * np.exp(-(T / p.nu) / p.T_coh)
-            F_aged = (1 + 3 * W_aged) / 4
-            F_fresh = (1 + 3 * W) / 4
-            F_link_out, P_suc_link = BBPSSW(F_aged, F_fresh)
-            T = (2 * T) / P_suc_link  # Sequential generation
-            W = (4 * F_link_out - 1) / 3
-
-        elif self.distillation_type is None:
-            pass  # W_link remains unchanged
+                    else:
+                        raise ValueError(
+                            "distillation_type must be 'multiplexing', 'standard', or None"
+                        )
         else:
-            raise ValueError(
-                "distillation_type must be 'multiplexing', 'standard', or None"
-            )
-        # ── subsequent links ─────────────────────────────────────────
-        for i in range(2, len(path)):
-            a, b = path[i - 1], path[i]
-            T_link = 1.0 / self.Probs_mtx[a, b]
-            Q_new = self.Q_link(a, b)
-            W_link = 1 - 2 * Q_new
-
-            # 1. DISTILL THE ELEMENTARY LINK (BEFORE THE SWAP)
-            if self.distillation_type == 'multiplexing':
-                F_link = (1 + 3 * W_link) / 4
-                F_link_out, P_suc_link = BBPSSW(F_link, F_link)
-                T_link = (1.5 * T_link) / P_suc_link  # Parallel generation
-                W_link = (4 * F_link_out - 1) / 3
-
-            elif self.distillation_type == 'standard':
-                # Sequential: Pair 1 waits for T_link while Pair 2 generates
-                W_aged = W_link * np.exp(-(T_link / p.nu) / p.T_coh)
-                F_aged = (1 + 3 * W_aged) / 4
-                F_fresh = (1 + 3 * W_link) / 4
-                F_link_out, P_suc_link = BBPSSW(F_aged, F_fresh)
-                T_link = (2 * T_link) / P_suc_link  # Sequential generation
-                W_link = (4 * F_link_out - 1) / 3
-
-            elif self.distillation_type is None:
-                pass  # W_link remains unchanged
-            else:
-                raise ValueError(
-                    "distillation_type must be 'multiplexing', 'standard', or None"
-                )
-
-            # 2. PERFORM THE SWAP (Sequential Wait & Decoherence)
-            # The accumulated chain 'W' waits while this newly purified link is generated
-            T = (T + T_link) / p.P_BSM
-            W_swap = W * np.exp(-(T_link / p.nu) / p.T_coh) * W_link
-
-            # 3. UPDATE THE CHAIN
-            W = W_swap
-
+            raise ValueError("distillation_time must be 'before_swap' or 'after_swap'")
 
         QBER  = (1 - W) / 2
         R_raw = self.entanglement_rate(T)
@@ -555,7 +522,7 @@ class QuantumRepeaterNetwork:
 
         records = []
         for dest, path in paths.items():
-            T, Q, SKR = self.calculate_metrics_dbs(path)
+            T, Q, SKR = self.calculate_metrics(path)
             records.append({
                 'total_time': T,
                 'Q':          Q,

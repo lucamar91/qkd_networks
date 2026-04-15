@@ -40,7 +40,7 @@ A, dist, coords = build_s2_graph(N=N, beta=2.6261, mu=0.0233, scale=SCALE)
 net = QuantumRepeaterNetwork(
     params, A, dist, coords,
     architecture='midpoint',
-    scale=SCALE, distillation_type='multiplexing'
+    scale=SCALE, distillation_type='standard'
 )
 
 # ── 4. Export ─────────────────────────────────────────────────────────────────
