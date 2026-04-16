@@ -234,16 +234,17 @@ class QuantumRepeaterNetwork:
     """
 
     def __init__(self, params, A, dist, coords=None,
-                 architecture='node', scale='city',
+                 architecture='node', scale='city', multiphoton=True,
                  distillation_type=None, distillation_level=1, distillation_time='before_swap'):
-        self.params            = params
-        self.A                 = A
-        self.dist              = dist
-        self.coords            = coords
-        self.architecture      = architecture
-        self.distillation_type = distillation_type
+        self.params             = params
+        self.A                  = A
+        self.dist               = dist
+        self.coords             = coords
+        self.architecture       = architecture
+        self.multiphoton        = multiphoton
+        self.distillation_type  = distillation_type
         self.distillation_level = distillation_level
-        self.distillation_time = distillation_time
+        self.distillation_time  = distillation_time
 
         if isinstance(scale, str):
             self.scale_km    = _SCALE_FACTORS[scale.lower()]
@@ -348,8 +349,12 @@ class QuantumRepeaterNetwork:
 
         if p_true + p_acc == 0:
             return 0.5   # no signal — maximally mixed
-
-        return (p_true * (p.q_0 + p.p_pair / 2) + 0.5 * p_acc) / (p_true + p_acc)
+        if self.multiphoton == True:
+            return (p_true * (p.q_0 + p.p_pair / 2) + 0.5 * p_acc) / (p_true + p_acc)
+        elif self.multiphoton == False:
+            return (p_true * p.q_0 + 0.5 * p_acc) / (p_true + p_acc)
+        else:
+            raise ValueError("multiphoton must be True or False")
 
     def calculate_metrics(self, path):
         """
@@ -386,7 +391,7 @@ class QuantumRepeaterNetwork:
                     F_link = (1 + 3 * W) / 4
                     F_link_out, P_suc_link = BBPSSW(F_link, F_link)
                     T = (1.5 * T) / P_suc_link  # Parallel generation
-                    W = (4 * F_link_out - 1) / 3
+                    W = (4 * F_link_out - 1) / 3 # Turns back into a Werner state (needed for BBPSSW)
 
                 elif self.distillation_type == 'standard':
                     # Sequential: Pair 1 waits for T_link while Pair 2 generates
