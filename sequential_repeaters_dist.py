@@ -13,7 +13,7 @@ params.p_det     = 0.95
 params.alpha     = 0.18
 params.q_0       = 0.01
 params.nu        = 1e9
-params.R_dark    = 100
+params.R_dark    = 100 # Ner term application
 params.delta_det = 100e-12
 params.p_pair    = 0.05
 params.eta_c     = 0.8
@@ -235,14 +235,16 @@ class QuantumRepeaterNetwork:
 
     def __init__(self, params, A, dist, coords=None,
                  architecture='node', scale='city', multiphoton=True,
-                 distillation_type=None, distillation_level=1, distillation_time='before_swap'):
+                 distillation=True, multiplexing_type=None, M = 10e4, distillation_level=1, distillation_time='before_swap'):
         self.params             = params
         self.A                  = A
         self.dist               = dist
         self.coords             = coords
         self.architecture       = architecture
         self.multiphoton        = multiphoton
-        self.distillation_type  = distillation_type
+        self.distillation       = distillation
+        self.multiplexing_type  = multiplexing_type
+        self.M                  = M
         self.distillation_level = distillation_level
         self.distillation_time  = distillation_time
 
@@ -280,7 +282,16 @@ class QuantumRepeaterNetwork:
         eta_A_mtx    = p.eta_c * p.p_det * 10 ** (-p.alpha * dist_A / 10) * A
         eta_B_mtx    = p.eta_c * p.p_det * 10 ** (-p.alpha * dist_B / 10) * A
         P_ent_matrix = p.p_pair * eta_A_mtx * eta_B_mtx
-
+        if self.multiplexing_type == 'accumulated':
+            P_ent_matrix= 1-(1-P_ent_matrix)**self.M
+        elif self.multiplexing_type == 'single_burst':
+            from scipy.stats import binom
+            m_required = 2 ** self.distillation_level
+            P_ent_matrix = 1 - binom.cdf(m_required - 1, self.M, P_ent_matrix) # Check this
+        elif self.multiplexing_type is None:
+            pass
+        else:
+            raise ValueError("multiplexing_type must be 'accumulated', 'single_burst' or None")
         return P_ent_matrix, eta_A_mtx, eta_B_mtx
 
     # ------------------------------------------------------------------
@@ -350,7 +361,7 @@ class QuantumRepeaterNetwork:
         if p_true + p_acc == 0:
             return 0.5   # no signal — maximally mixed
         if self.multiphoton == True:
-            return (p_true * (p.q_0 + p.p_pair / 2) + 0.5 * p_acc) / (p_true + p_acc)
+            return (p_true * (p.q_0 + p.p_pair * 0.75) + 0.5 * p_acc) / (p_true + p_acc) # With thermal approximation for multiphoton error
         elif self.multiphoton == False:
             return (p_true * p.q_0 + 0.5 * p_acc) / (p_true + p_acc)
         else:
@@ -387,13 +398,13 @@ class QuantumRepeaterNetwork:
         if self.distillation_time == 'before_swap':
             for level in range(self.distillation_level):
                 # 1. DISTILL THE ELEMENTARY LINK (BEFORE THE SWAP)
-                if self.distillation_type == 'multiplexing':
+                if self.distillation == True and self.multiplexing_type == 'single_burst':
                     F_link = (1 + 3 * W) / 4
                     F_link_out, P_suc_link = BBPSSW(F_link, F_link)
-                    T = (1.5 * T) / P_suc_link  # Parallel generation
+                    T = T / P_suc_link  # Parallel generation
                     W = (4 * F_link_out - 1) / 3 # Turns back into a Werner state (needed for BBPSSW)
 
-                elif self.distillation_type == 'standard':
+                elif self.distillation == True and self.multiplexing_type != 'single_burst':
                     # Sequential: Pair 1 waits for T_link while Pair 2 generates
                     W_aged = W * np.exp(-(T / p.nu) / p.T_coh)
                     F_aged = (1 + 3 * W_aged) / 4
@@ -402,11 +413,11 @@ class QuantumRepeaterNetwork:
                     T = (2 * T) / P_suc_link  # Sequential generation
                     W = (4 * F_link_out - 1) / 3
 
-                elif self.distillation_type is None:
+                elif self.distillation == False:
                     pass  # W_link remains unchanged
                 else:
                     raise ValueError(
-                        "distillation_type must be 'multiplexing', 'standard', or None"
+                        "distillation must be True or False"
                     )
 
             # ── subsequent links ─────────────────────────────────────────
@@ -418,13 +429,13 @@ class QuantumRepeaterNetwork:
 
                 for level in range(self.distillation_level):
 
-                    if self.distillation_type == 'multiplexing':
+                    if self.distillation == True and self.multiplexing_type == 'single_burst':
                         F_link = (1 + 3 * W_link) / 4
                         F_link_out, P_suc_link = BBPSSW(F_link, F_link)
-                        T_link = (1.5 * T_link) / P_suc_link  # Parallel generation
+                        T_link = T_link / P_suc_link  # Parallel generation
                         W_link = (4 * F_link_out - 1) / 3
 
-                    elif self.distillation_type == 'standard':
+                    elif self.distillation == True and self.multiplexing_type != 'single_burst':
                         # Sequential: Pair 1 waits for T_link while Pair 2 generates
                         W_aged = W_link * np.exp(-(T_link / p.nu) / p.T_coh)
                         F_aged = (1 + 3 * W_aged) / 4
@@ -447,7 +458,11 @@ class QuantumRepeaterNetwork:
                 T_link = 1.0 / self.Probs_mtx[a, b]
 
                 # Sequential wait: accumulate time, divide by P_BSM for swap
-                T = (T + T_link) / p.P_BSM
+                if self.multiplexing_type == 'single_burst':
+                    m_required = 2**self.distillation_level
+                    T = (T + T_link) / p.P_BSM**m_required
+                else:
+                    T = (T + T_link) / p.P_BSM
 
                 Q_new  = self.Q_link(a, b)
                 W_link = 1 - 2 * Q_new
@@ -456,36 +471,39 @@ class QuantumRepeaterNetwork:
                 W = W * np.exp(-(T_link / p.nu) / p.T_coh) * W_link
 
                 for level in range(self.distillation_level):
-
-                    if self.distillation_type == 'multiplexing':
-                        # Both pairs freshly generated → same fidelity
+                    if self.distillation == True and self.multiplexing_type == 'single_burst':
+                        # We are distilling the SWAPPED pairs (W), which arrived simultaneously
                         F1 = F2 = (1 + 3 * W) / 4
                         F_out, P_suc = BBPSSW(F1, F2)
-                        T = 1.5 * T / P_suc
+
+                        # Penalize the TOTAL time, update the TOTAL fidelity
+                        T = T / P_suc
                         W = (4 * F_out - 1) / 3
 
-                    elif self.distillation_type == 'standard':
-                        # One pair aged for time T, the other is fresh
-                        W1 = W * np.exp(-(T / p.nu) / p.T_coh)
-                        F1   = (1 + 3 * W1)    / 4
-                        F2   = (1 + 3 * W) / 4
-                        F_out, P_suc = BBPSSW(F1, F2)
-                        T = 2 * T / P_suc
+                    elif self.distillation == True and self.multiplexing_type != 'single_burst':
+                        # Sequential: Swapped Pair 1 waited for Swapped Pair 2
+                        W_aged = W * np.exp(-(T / p.nu) / p.T_coh)
+                        F_aged = (1 + 3 * W_aged) / 4
+                        F_fresh = (1 + 3 * W) / 4
+                        F_out, P_suc = BBPSSW(F_aged, F_fresh)
+
+                        # Total time doubles because we had to wait for two complete chains to swap
+                        T = (2 * T) / P_suc
                         W = (4 * F_out - 1) / 3
 
-                    elif self.distillation_type is None:
+                    elif self.distillation == False:
                         pass
 
                     else:
                         raise ValueError(
-                            "distillation_type must be 'multiplexing', 'standard', or None"
+                            "distillation must be True or False"
                         )
         else:
             raise ValueError("distillation_time must be 'before_swap' or 'after_swap'")
 
         QBER  = (1 - W) / 2
         R_raw = self.entanglement_rate(T)
-        R     = 0.5 * R_raw          # factor 0.5: one pair consumed per BSM
+        R     = 0.5 * R_raw          # Sifting factor
         H     = binary_entropy(QBER)
         SKR   = R * (1 - 2 * H)
         return R_raw, QBER, SKR
