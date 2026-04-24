@@ -237,6 +237,21 @@ def build_density_graph(N, rho, beta, mu, D=2, sample_from_file=False):
     return A, dist, coords, scale_km
 
 
+def build_radius_graph(N, radius_km, beta, mu, D=2, sample_from_file=False):
+    """
+    Build an S2 random-geometric graph whose nodes live in a circular region
+    of physical radius *radius_km* [km].  The S2 scale factor equals the
+    radius directly, so edge distances are in km.
+
+    Returns
+    -------
+    A, dist, coords, radius_km
+    """
+    A, dist, coords = build_s2_graph(N, beta, mu, scale=float(radius_km),
+                                     D=D, sample_from_file=sample_from_file)
+    return A, dist, coords, float(radius_km)
+
+
 # ---------------------------------------------------------------------------
 # Coordinate projection
 # ---------------------------------------------------------------------------
@@ -287,7 +302,7 @@ class QuantumRepeaterNetwork:
 
     def __init__(self, params, A, dist, coords=None,
                  architecture='node', scale='city', multiphoton=True,
-                 distillation=True, multiplexing_type=None, M = 10e4, distillation_level=1, distillation_time='before_swap'):
+                 distillation=True, multiplexing_type=None, M = 10e4, distillation_level=1, distillation_time='before_swap', just_transmittance=False):
         self.params             = params
         self.A                  = A
         self.dist               = dist
@@ -299,6 +314,7 @@ class QuantumRepeaterNetwork:
         self.M                  = M
         self.distillation_level = distillation_level
         self.distillation_time  = distillation_time
+        self.just_transmittance = just_transmittance
 
         if isinstance(scale, str):
             self.scale_km    = _SCALE_FACTORS[scale.lower()]
@@ -370,6 +386,10 @@ class QuantumRepeaterNetwork:
         W = np.zeros_like(self.Probs_mtx)
         nz = self.Probs_mtx > 0
         W[nz] = -np.log2(self.Probs_mtx[nz]) - np.log2(p.P_BSM)
+        if self.just_transmittance == True:
+            W[nz] = -np.log2(self.Probs_mtx[nz]) - np.log2(p.P_BSM) + np.log2(p.p_pair * p.eta_c**2 * p.p_det**2)
+        else:
+            W[nz] = -np.log2(self.Probs_mtx[nz]) - np.log2(p.P_BSM)
         G = nx.from_numpy_array(W)
         return nx.single_source_dijkstra(G, source, target=target, weight='weight')
 
