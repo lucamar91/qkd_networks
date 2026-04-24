@@ -185,6 +185,58 @@ def build_graph(n_hubs, avg_n_branches):
     return A, dist
 
 
+def density_to_scale(N, rho):
+    """
+    Convert a spatial node density to the km scale factor used by build_s2_graph.
+
+    The S2 graph embeds N nodes in a unit-sphere patch whose angular radius is
+    normalised to 1 radian. When we want nodes to live inside a circular region
+    of area A = N / rho [km²] we need:
+
+        pi * r² = N / rho   →   r = sqrt(N / (pi * rho))
+
+    This radius [km] is then passed as the ``scale`` argument of build_s2_graph
+    so that all edge distances are expressed in km consistently.
+
+    Parameters
+    ----------
+    N   : int    Number of nodes.
+    rho : float  Spatial density  [nodes / km²].
+
+    Returns
+    -------
+    scale_km : float  Scale factor [km / radian] for build_s2_graph.
+    """
+    return np.sqrt(N / (np.pi * rho))
+
+
+def build_density_graph(N, rho, beta, mu, D=2, sample_from_file=False):
+    """
+    Build an S2 random-geometric graph at a given spatial node density.
+
+    This is a thin wrapper around :func:`build_s2_graph` that converts
+    *rho* [nodes/km²] to the appropriate km scale factor.
+
+    Parameters
+    ----------
+    N   : int    Number of nodes.
+    rho : float  Spatial density  [nodes / km²].
+    beta, mu, D, sample_from_file : passed through to build_s2_graph.
+
+    Returns
+    -------
+    A      : np.ndarray (N, N)  Binary adjacency matrix.
+    dist   : np.ndarray (N, N)  Distance matrix [km].
+    coords : np.ndarray (N, 3)  Unit-sphere coordinates.
+    scale_km : float            Scale used (useful for QuantumRepeaterNetwork).
+    """
+    scale_km = density_to_scale(N, rho)
+    A, dist, coords = build_s2_graph(
+        N, beta, mu, scale=scale_km, D=D, sample_from_file=sample_from_file
+    )
+    return A, dist, coords, scale_km
+
+
 # ---------------------------------------------------------------------------
 # Coordinate projection
 # ---------------------------------------------------------------------------
@@ -545,9 +597,9 @@ class QuantumRepeaterNetwork:
 
         records = []
         for dest, path in paths.items():
-            T, Q, SKR = self.calculate_metrics(path)
+            R, Q, SKR = self.calculate_metrics(path)
             records.append({
-                'total_time': T,
+                'R':          R,
                 'Q':          Q,
                 'SKR':        SKR,
                 'path':       path,
@@ -558,6 +610,116 @@ class QuantumRepeaterNetwork:
     # ------------------------------------------------------------------
     # HTML export
     # ------------------------------------------------------------------
+    def network_metrics(self, sources=None, verbose=True):
+        """
+        Compute aggregate network-level performance metrics by iterating over
+        all (or a specified subset of) source nodes and collecting every
+        source→destination path result.
+
+        The three metrics are:
+
+        1. **avg_rate** – Average entanglement generation rate [pairs/s]
+               mean of R_raw over all viable (SKR > 0) ordered pairs (i, j).
+
+        2. **avg_dist_weighted_rate** – Average distance-weighted rate [pairs·km/s]
+               mean of R_raw(i,j) × D(i,j) over all viable pairs, where D(i,j)
+               is the total physical path length [km].  Rewards reaching distant
+               nodes at a reasonable rate.
+
+        3. **reachability** – Fraction of ordered pairs with SKR > 0
+               viable_pairs / (N × (N-1)), where N is the number of nodes.
+
+        Parameters
+        ----------
+        sources : iterable of int or None
+            Node indices to use as sources.  If None (default), all N nodes
+            are used, giving the full N(N-1) denominator.
+        verbose : bool
+            Print a progress line for each source (default True).
+
+        Returns
+        -------
+        metrics : dict with keys
+            'avg_rate'               – float [pairs/s]
+            'avg_dist_weighted_rate' – float [pairs·km/s]
+            'reachability'           – float [0, 1]
+            'n_viable_pairs'         – int
+            'n_total_pairs'          – int
+            'per_source'             – list of dicts, one per source, each with
+                                       keys 'source', 'df' (the full DataFrame
+                                       from analyze_all_paths), and the three
+                                       scalar metrics computed for that source
+                                       alone.
+        """
+        N = self.A.shape[0]
+        all_sources = list(range(N)) if sources is None else list(sources)
+
+        # Accumulators across all sources
+        rates = []  # R_raw for viable pairs
+        dist_w_rates = []  # R_raw * D for viable pairs
+        n_viable = 0
+        n_total = N * (N - 1)  # directed pairs; adjust if sources subset given
+
+        if sources is not None:
+            # When a subset of sources is given, only those rows are in the denominator
+            n_total = len(all_sources) * (N - 1)
+
+        per_source_results = []
+
+        for src in all_sources:
+            if verbose:
+                print(f"  Computing paths from source {src} / {all_sources[-1]} …")
+
+            df = self.analyze_all_paths(src)  # index = destination node
+
+            # Per-source accumulators
+            src_rates = []
+            src_dist_w_rates = []
+            src_viable = 0
+
+            for dest, row in df.iterrows():
+                skr = row['SKR']
+                r = row['R']
+
+                # Total physical path length for this pair
+                path = row['path']
+                hop_dists = self.path_distances(path)
+                d_total = sum(hop_dists)
+
+                if skr > 0:
+                    rates.append(r)
+                    dist_w_rates.append(r * d_total)
+                    src_rates.append(r)
+                    src_dist_w_rates.append(r * d_total)
+                    n_viable += 1
+                    src_viable += 1
+
+            per_source_results.append({
+                'source': src,
+                'df': df,
+                'avg_rate': float(np.mean(src_rates)) if src_rates else 0.0,
+                'avg_dist_weighted_rate': float(np.mean(src_dist_w_rates)) if src_dist_w_rates else 0.0,
+                'reachability': src_viable / (N - 1) if N > 1 else 0.0,
+            })
+
+        metrics = {
+            'avg_rate': float(np.mean(rates)) if rates else 0.0,
+            'avg_dist_weighted_rate': float(np.mean(dist_w_rates)) if dist_w_rates else 0.0,
+            'reachability': n_viable / n_total if n_total > 0 else 0.0,
+            'n_viable_pairs': n_viable,
+            'n_total_pairs': n_total,
+            'per_source': per_source_results,
+        }
+
+        if verbose:
+            print("\n── Network metrics ──────────────────────────────────")
+            print(f"  Avg rate                  : {metrics['avg_rate']:.4e} pairs/s")
+            print(f"  Avg dist-weighted rate    : {metrics['avg_dist_weighted_rate']:.4e} pairs·km/s")
+            print(f"  Reachability              : {metrics['reachability'] * 100:.2f} %")
+            print(f"  Viable pairs              : {metrics['n_viable_pairs']} / {metrics['n_total_pairs']}")
+            print("─────────────────────────────────────────────────────\n")
+
+        return metrics
 
     def export_html(self, source, output_path="repeater_viz.html"):
         """
