@@ -433,7 +433,7 @@ class QuantumRepeaterNetwork:
         if p_true + p_acc == 0:
             return 0.5   # no signal — maximally mixed
         if self.multiphoton == True:
-            return (p_true * (p.q_0 + p.p_pair * 0.75) + 0.5 * p_acc) / (p_true + p_acc) # With thermal approximation for multiphoton error
+            return (p_true * (p.q_0 + p.p_pair * 0.5) + 0.5 * p_acc) / (p_true + p_acc) # With thermal approximation for multiphoton error
         elif self.multiphoton == False:
             return (p_true * p.q_0 + 0.5 * p_acc) / (p_true + p_acc)
         else:
@@ -631,58 +631,15 @@ class QuantumRepeaterNetwork:
     # HTML export
     # ------------------------------------------------------------------
     def network_metrics(self, sources=None, verbose=True):
-        """
-        Compute aggregate network-level performance metrics by iterating over
-        all (or a specified subset of) source nodes and collecting every
-        source→destination path result.
-
-        The three metrics are:
-
-        1. **avg_rate** – Average entanglement generation rate [pairs/s]
-               mean of R_raw over all viable (SKR > 0) ordered pairs (i, j).
-
-        2. **avg_dist_weighted_rate** – Average distance-weighted rate [pairs·km/s]
-               mean of R_raw(i,j) × D(i,j) over all viable pairs, where D(i,j)
-               is the total physical path length [km].  Rewards reaching distant
-               nodes at a reasonable rate.
-
-        3. **reachability** – Fraction of ordered pairs with SKR > 0
-               viable_pairs / (N × (N-1)), where N is the number of nodes.
-
-        Parameters
-        ----------
-        sources : iterable of int or None
-            Node indices to use as sources.  If None (default), all N nodes
-            are used, giving the full N(N-1) denominator.
-        verbose : bool
-            Print a progress line for each source (default True).
-
-        Returns
-        -------
-        metrics : dict with keys
-            'avg_rate'               – float [pairs/s]
-            'avg_dist_weighted_rate' – float [pairs·km/s]
-            'reachability'           – float [0, 1]
-            'n_viable_pairs'         – int
-            'n_total_pairs'          – int
-            'per_source'             – list of dicts, one per source, each with
-                                       keys 'source', 'df' (the full DataFrame
-                                       from analyze_all_paths), and the three
-                                       scalar metrics computed for that source
-                                       alone.
-        """
         N = self.A.shape[0]
         all_sources = list(range(N)) if sources is None else list(sources)
 
-        # Accumulators across all sources
-        rates = []  # R_raw for viable pairs
-        dist_w_rates = []  # R_raw * D for viable pairs
-        n_viable = 0
-        n_total = N * (N - 1)  # directed pairs; adjust if sources subset given
-
-        if sources is not None:
-            # When a subset of sources is given, only those rows are in the denominator
-            n_total = len(all_sources) * (N - 1)
+        rates_all = []  # R_raw for all pairs where a path exists
+        rates_skr = []  # R_raw for SKR > 0 pairs only (kept for reference)
+        skrs = []  # SKR clipped to 0 for all pairs where path exists
+        n_viable = 0  # pairs with SKR > 0
+        n_connected = 0  # pairs where a path exists at all
+        n_total = len(all_sources) * (N - 1) if sources is not None else N * (N - 1)
 
         per_source_results = []
 
@@ -690,53 +647,61 @@ class QuantumRepeaterNetwork:
             if verbose:
                 print(f"  Computing paths from source {src} / {all_sources[-1]} …")
 
-            df = self.analyze_all_paths(src)  # index = destination node
+            df = self.analyze_all_paths(src)
 
-            # Per-source accumulators
-            src_rates = []
-            src_dist_w_rates = []
+            src_rates_all = []
+            src_skrs = []
             src_viable = 0
+            src_connected = 0
 
             for dest, row in df.iterrows():
                 skr = row['SKR']
                 r = row['R']
-
-                # Total physical path length for this pair
                 path = row['path']
-                hop_dists = self.path_distances(path)
-                d_total = sum(hop_dists)
+
+                if path is None or len(path) == 0:
+                    continue  # no path exists, skip entirely
+
+                # Path exists — include in rate average regardless of SKR
+                rates_all.append(r)
+                skrs.append(max(skr, 0.0))
+                src_rates_all.append(r)
+                src_skrs.append(max(skr, 0.0))
+                src_connected += 1
+                n_connected += 1
 
                 if skr > 0:
-                    rates.append(r)
-                    dist_w_rates.append(r * d_total)
-                    src_rates.append(r)
-                    src_dist_w_rates.append(r * d_total)
+                    rates_skr.append(r)
                     n_viable += 1
                     src_viable += 1
 
             per_source_results.append({
                 'source': src,
                 'df': df,
-                'avg_rate': float(np.mean(src_rates)) if src_rates else 0.0,
-                'avg_dist_weighted_rate': float(np.mean(src_dist_w_rates)) if src_dist_w_rates else 0.0,
+                'avg_rate': float(np.mean(src_rates_all)) if src_rates_all else 0.0,
+                'avg_skr': float(np.mean(src_skrs)) if src_skrs else 0.0,
                 'reachability': src_viable / (N - 1) if N > 1 else 0.0,
             })
 
         metrics = {
-            'avg_rate': float(np.mean(rates)) if rates else 0.0,
-            'avg_dist_weighted_rate': float(np.mean(dist_w_rates)) if dist_w_rates else 0.0,
+            'avg_rate': float(np.mean(rates_all)) if rates_all else 0.0,
+            'avg_rate_skr': float(np.mean(rates_skr)) if rates_skr else 0.0,  # old behaviour, kept for reference
+            'avg_skr': float(np.mean(skrs)) if skrs else 0.0,
             'reachability': n_viable / n_total if n_total > 0 else 0.0,
             'n_viable_pairs': n_viable,
+            'n_connected_pairs': n_connected,
             'n_total_pairs': n_total,
             'per_source': per_source_results,
         }
 
         if verbose:
             print("\n── Network metrics ──────────────────────────────────")
-            print(f"  Avg rate                  : {metrics['avg_rate']:.4e} pairs/s")
-            print(f"  Avg dist-weighted rate    : {metrics['avg_dist_weighted_rate']:.4e} pairs·km/s")
+            print(f"  Avg rate (all connected)  : {metrics['avg_rate']:.4e} pairs/s")
+            print(f"  Avg rate (SKR > 0 only)   : {metrics['avg_rate_skr']:.4e} pairs/s")
+            print(f"  Avg SKR  (negatives → 0)  : {metrics['avg_skr']:.4e} bits/s")
             print(f"  Reachability              : {metrics['reachability'] * 100:.2f} %")
-            print(f"  Viable pairs              : {metrics['n_viable_pairs']} / {metrics['n_total_pairs']}")
+            print(f"  Viable pairs (SKR > 0)    : {metrics['n_viable_pairs']} / {metrics['n_total_pairs']}")
+            print(f"  Connected pairs           : {metrics['n_connected_pairs']} / {metrics['n_total_pairs']}")
             print("─────────────────────────────────────────────────────\n")
 
         return metrics
