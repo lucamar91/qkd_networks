@@ -266,7 +266,7 @@ def visualize_graph_with_k_core(graph, k):
     plt.show()
 
 
-def optimal_quantum_repeater_path(Probs_mtx, P_Bell, source, target=None): # structured like nx.single_source_dijkstra
+def optimal_quantum_relay_path(Probs_mtx, P_Bell, source, target=None): # structured like nx.single_source_dijkstra
     # subtlety here: we cannot log probs mtx because there are zero elements corresponding to non-directly connected nodes
     # however we want 0s in the same positions in W to make dijkstra work. so we use boolean masks
     W = np.zeros_like(Probs_mtx)
@@ -279,6 +279,24 @@ def optimal_quantum_repeater_path(Probs_mtx, P_Bell, source, target=None): # str
     else:
         probs = np.exp(-weights + np.log2(P_Bell))
     return probs, paths
+    # EDIT: this model is too simple. if the probability is exponentially small, the weight is simply the sum of the lengths of the edges
+    # ==> this penalizes too much the presence of a repeater: a repeaterless path is more convenient than one with a repeater! defeats the purpose
 
+    # EDIT2: this is due to the fact that we are not modelling a quantum repeater bc we dont have quantum memories! this is called a quantum relay
+    # there are models for quantum repeater chains, lets consider eg the one in shchukin et al "Waiting time in quantum repeaters with probabilistic entanglement swapping"
 
-
+'''
+def optimal_quantum_repeater_path(Probs_mtx, P_Bell, source, target=None): # structured like nx.single_source_dijkstra
+    # subtlety here: we cannot log probs mtx because there are zero elements corresponding to non-directly connected nodes
+    # however we want 0s in the same positions in W to make dijkstra work. so we use boolean masks
+    W = np.zeros_like(Probs_mtx)
+    mask = Probs_mtx > 0
+    W[mask] = -np.log2(Probs_mtx[mask]) - np.log2(P_Bell)
+    G = nx.from_numpy_array(W)
+    weights, paths = nx.single_source_dijkstra(G, source, target, weight='weight')
+    if target is None:     # + np.log2(P_Bell) to avoid overcounting the Bell state success probability. exp to directly return probabilities
+    else:
+        probs = {node: np.exp(-weight + np.log2(P_Bell)) for node, weight in weights.items()}  
+        probs = np.exp(-weights + np.log2(P_Bell))
+    return probs, paths
+'''
