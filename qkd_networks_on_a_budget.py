@@ -15,7 +15,7 @@ import shutil    # to copy files at the end of the script
 # The version of the QKD protocol used (CV/DV/hybrid) can be changed through the variable 'd_hybrid' below.
 # WHAT CHANGES WRT qkd_networks.py ? We analyze the properties of the hybrid nw for different "budgets" of DV links
 
-Ns = [200, 500, 1000, 2000]                    # list of network sizes
+Ns = [1000]                    # list of network sizes
 
 rate_min = 0
 n_nodes_for_dijkstra = 20
@@ -28,7 +28,8 @@ mu = 0.0233                   # \mu param of S2 model
 sample_from_file = False      # if True, coordinates are sampled from the results of d-Mercator (limits max number of nodes)
 detection_mode = 'homodyne'   # homo-/hetero-dyne
 reconciliation = 'reverse'    # type of reconciliation
-budget_list = [0, 1, 4, 16, 64, np.inf]            # list of numbers of DV edges allowed in the system
+budget_list = [0, 1, 4, 16, 64, 256, 1024, np.inf]            # list of numbers of DV edges allowed in the system
+candidate_ranking_criterion = 'random'     # 'centrality', 'random', 'geodetic_distance', 'degree'
 
 ####### The state-of-the-art values for the following params are usually kept fixed and assigned in qopt_funcs.py ##########
 # params for the qkd rates:
@@ -119,6 +120,8 @@ for N in Ns:
         suffix += '_ratemin%.0f' % rate_min
         suffix += ('_sampled_from_real_nw' if sample_from_file else '') + ('_PoF%.2f' % PoF if edges_may_fail else '')
         suffix += '_%dnws' % n_iter
+        if candidate_ranking_criterion != 'centrality':
+            suffix += '_' + candidate_ranking_criterion
 
         budg_filename = 'out_'+qkd+'_rhos_budg' + suffix + '.dat'
         if os.path.exists(budg_filename):
@@ -174,6 +177,15 @@ for N in Ns:
                 G_pruned = nx.from_numpy_array(W)          # return a weighted graph object
                 G_CV = nx.from_numpy_array(W_CV)          # CV-only graph, to which DV edges will be added according to the budget
                 edge_centrality = nx.edge_betweenness_centrality(G_pruned)
+
+                ranking_func_dict = {
+                    'centrality': lambda G, v: nx.degree_centrality(G)[v],
+                    'random': lambda G, v: np.random.random(),
+                    'geodetic_distance': lambda G, v: np.mean([nx.shortest_path_length(G, v, u) for u in G.nodes() if u != v]),
+                    'degree': lambda G, v: G.degree(v)
+                }
+
+
                 edge_centrality = {
                     tuple(sorted(edge)): c
                     for edge, c in edge_centrality.items()
@@ -183,7 +195,7 @@ for N in Ns:
                     tuple(sorted(edge))
                     for edge in candidate_DV_edges
                 ]            
-
+                # CHANGE THIS BIT TO USE OTHER RANKING CRITERIA (RANDOM, GEO DISTANCE, DEGREE-RELATED, ETC)
                 sorted_candidate_edges = sorted(
                     candidate_DV_edges,
                     key=lambda e: edge_centrality[e],
