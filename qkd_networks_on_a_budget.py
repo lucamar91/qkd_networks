@@ -29,7 +29,7 @@ sample_from_file = False      # if True, coordinates are sampled from the result
 detection_mode = 'homodyne'   # homo-/hetero-dyne
 reconciliation = 'reverse'    # type of reconciliation
 budget_list = [0, 1, 4, 16, 64, 256, 1024, np.inf]            # list of numbers of DV edges allowed in the system
-candidate_ranking_criterion = 'random'     # 'centrality', 'random', 'geodetic_distance', 'degree'
+candidate_ranking_criterion = 'degree'     # 'centrality', 'random', 'geodetic_distance', 'topological_distance', 'degree'
 
 ####### The state-of-the-art values for the following params are usually kept fixed and assigned in qopt_funcs.py ##########
 # params for the qkd rates:
@@ -177,15 +177,6 @@ for N in Ns:
                 G_pruned = nx.from_numpy_array(W)          # return a weighted graph object
                 G_CV = nx.from_numpy_array(W_CV)          # CV-only graph, to which DV edges will be added according to the budget
                 edge_centrality = nx.edge_betweenness_centrality(G_pruned)
-
-                ranking_func_dict = {
-                    'centrality': lambda G, v: nx.degree_centrality(G)[v],
-                    'random': lambda G, v: np.random.random(),
-                    'geodetic_distance': lambda G, v: np.mean([nx.shortest_path_length(G, v, u) for u in G.nodes() if u != v]),
-                    'degree': lambda G, v: G.degree(v)
-                }
-
-
                 edge_centrality = {
                     tuple(sorted(edge)): c
                     for edge, c in edge_centrality.items()
@@ -194,12 +185,30 @@ for N in Ns:
                 candidate_DV_edges = [
                     tuple(sorted(edge))
                     for edge in candidate_DV_edges
-                ]            
-                # CHANGE THIS BIT TO USE OTHER RANKING CRITERIA (RANDOM, GEO DISTANCE, DEGREE-RELATED, ETC)
+                ]
+
+                def dv_edge_score(edge):
+                    i, j = edge
+                    if candidate_ranking_criterion == 'centrality':
+                        return edge_centrality.get(edge, 0)
+                    if candidate_ranking_criterion == 'random':
+                        return np.random.random()
+                    if candidate_ranking_criterion == 'geodetic_distance':
+                        return radius * Dists[i, j]
+                    if candidate_ranking_criterion == 'topological_distance':
+                        try:
+                            return nx.shortest_path_length(G_pruned, i, j)
+                        except nx.NetworkXNoPath:
+                            return np.inf
+                    if candidate_ranking_criterion == 'degree':
+                        return G_pruned.degree(i) * G_pruned.degree(j)
+                    return edge_centrality.get(edge, 0)
+
+                reverse_sort = candidate_ranking_criterion in ['centrality', 'random', 'degree']
                 sorted_candidate_edges = sorted(
                     candidate_DV_edges,
-                    key=lambda e: edge_centrality[e],
-                    reverse=True
+                    key=dv_edge_score,
+                    reverse=reverse_sort
                 )
                 
                 number_possible_DV_edges = len(candidate_DV_edges)
