@@ -301,7 +301,7 @@ class QuantumRepeaterNetwork:
     """
 
     def __init__(self, params, A, dist, coords=None,
-                 architecture='node', scale='city', multiphoton=True,
+                 architecture='node', scale='city', multiphoton=False,
                  distillation=True, multiplexing_type=None, M = 10e4, distillation_level=1, distillation_time='before_swap', just_transmittance=False):
         self.params             = params
         self.A                  = A
@@ -338,18 +338,11 @@ class QuantumRepeaterNetwork:
         p    = self.params
         A, d = self.A, self.dist
 
-        if self.architecture == 'node':
-            dist_A = np.zeros_like(d)
-            dist_B = d
-        elif self.architecture == 'midpoint':
-            dist_A = d / 2
-            dist_B = d / 2
-        else:
-            raise ValueError("architecture must be 'node' or 'midpoint'")
+        dist_A = dist_B = d / 2
+        p.eta_M = 1.0
+        P_A = P_B = p.p_pair * p.eta_c * 10 ** (-p.alpha * dist_A / 10) * A * p.eta_M # Probability to create photon pair x it survives to midpoint beam splitter
+        P_ent_matrix = 2 * P_A * P_B * (p_det**2) * (1 - P_B * p_det) * (1 - P_A * p_det) # We need A and B to succeed exactly once each (there are two ways this could happen which is why we multiply by 2). This is double rail
 
-        eta_A_mtx    = p.eta_c * p.p_det * 10 ** (-p.alpha * dist_A / 10) * A
-        eta_B_mtx    = p.eta_c * p.p_det * 10 ** (-p.alpha * dist_B / 10) * A
-        P_ent_matrix = p.p_pair * eta_A_mtx * eta_B_mtx
         if self.multiplexing_type == 'accumulated':
             P_ent_matrix= 1-(1-P_ent_matrix)**self.M
         elif self.multiplexing_type == 'single_burst':
@@ -360,7 +353,7 @@ class QuantumRepeaterNetwork:
             pass
         else:
             raise ValueError("multiplexing_type must be 'accumulated', 'single_burst' or None")
-        return P_ent_matrix, eta_A_mtx, eta_B_mtx
+        return P_ent_matrix, P_A/p.p_pair, P_B/p.p_pair
 
     # ------------------------------------------------------------------
     # Public analysis methods
@@ -421,21 +414,28 @@ class QuantumRepeaterNetwork:
         float   QBER in [0, 0.5]
         """
         p     = self.params
-        eta_A = self.eta_A_mtx[a, b]
-        eta_B = self.eta_B_mtx[a, b]
+        eta_A = self.P_A[a, b]
+        eta_B = self.P_B[a, b]
+        p_true = self.Probs_mtx[a, b]
         p_dc  = p.R_dark * p.delta_det
 
-        p_acc  = (p.p_pair * eta_A * (1 - eta_B) * p_dc
-                  + p.p_pair * eta_B * (1 - eta_A) * p_dc
-                  + p_dc ** 2)
-        p_true = p.p_pair * eta_A * eta_B
+        Term_1 = 4 * (p.p_pair * eta_A * p.p_det * (1 - p.p_pair * eta_B * p.p_det)) * ((1 - p.p_pair * eta_A * p.p_det) * p.p_pair * (1 - eta_B * p.p_det) * p_dc) # One rail has dark count
+        Term_2 = 2 * (p.p_pair * (1 - eta_A * p.p_det) * (1 - p.p_pair * eta_B * p.p_det) * p_dc) * ((1 - p.p_pair * eta_A * p.p_det) * p.p_pair * (1 - eta_B * p.p_det) * p_dc) # Both rails have dark counts
+        Term_3 = 2 * ((p.p_pair * eta_A * p.p_det * p.p_pair * (1 - eta_B * p.p_det)) + (p.p_pair * (1 - eta_A * p.p_det) * p.p_pair * eta_B * p.p_det)) * ((1 - p.p_pair) ** 2 * p_dc) # Two successes in first rail but lost in fibre and then   two dark counts in the other rail
+
+        # Term 4: The Multi-Photon Error (Both fire on same rail, one or both survive)
+        Term_MP = 2 * (p_pair ** 2 * (1 - (1 - eta_A * p_det) * (1 - eta_R1 * p_det))) * ((1 - p_pair) ** 2)
+
+        # Term 5: The Cross-Rail Multi-Photon Error (A fires on Rail 1, R1 fires on Rail 2)
+        Term_MP_Cross = 2 * (p_pair * eta_A * p_det * (1 - p_pair)) * ((1 - p_pair) * p_pair * eta_R1 * p_det)
+        p_acc = Term_1 + Term_2 + Term_3
 
         if p_true + p_acc == 0:
             return 0.5   # no signal — maximally mixed
         if self.multiphoton == True:
             return (p_true * (p.q_0 + p.p_pair * 0.5) + 0.5 * p_acc) / (p_true + p_acc) # With thermal approximation for multiphoton error
         elif self.multiphoton == False:
-            return (p_true * p.q_0 + 0.5 * p_acc) / (p_true + p_acc)
+            return (p_true * p.q_0 + 0.5 *p_acc) / (p_true + p_acc)
         else:
             raise ValueError("multiphoton must be True or False")
 
