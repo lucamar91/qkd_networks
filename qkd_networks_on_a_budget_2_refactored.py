@@ -19,7 +19,7 @@ import shutil    # to copy files at the end of the script
 # prunes it once per radius, ranks the candidate DV edges once per criterion, and then evaluates
 # all requested DV budgets from the same ranked edge list.
 
-Ns = [1000]                    # list of network sizes
+Ns = [2000]                    # list of network sizes
 
 rate_min = 0
 n_nodes_for_dijkstra = 20
@@ -32,7 +32,7 @@ mu = 0.0233                   # \mu param of S2 model
 sample_from_file = False      # if True, coordinates are sampled from the results of d-Mercator
 detection_mode = 'homodyne'   # homo-/hetero-dyne
 reconciliation = 'reverse'    # type of reconciliation
-budget_list = [0, 1, 4, 16, 64, 256, 1024, np.inf]
+budget_list = [0, 1, 4, 16, 32, 64, 128, 256, 512, 1024, np.inf]
 candidate_ranking_criteria = [
     'degree',
     'centrality',
