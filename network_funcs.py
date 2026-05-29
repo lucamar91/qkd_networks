@@ -266,6 +266,11 @@ def visualize_graph_with_k_core(graph, k):
     plt.show()
 
 
+
+
+############################################ FUNCTIONS FOR QUANTUM REPEATER NETWORKS ############################################
+
+
 def optimal_quantum_relay_path(Probs_mtx, P_Bell, source, target=None): # structured like nx.single_source_dijkstra
     # subtlety here: we cannot log probs mtx because there are zero elements corresponding to non-directly connected nodes
     # however we want 0s in the same positions in W to make dijkstra work. so we use boolean masks
