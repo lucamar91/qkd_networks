@@ -83,3 +83,34 @@ print(
     f"Graph generated successfully with {G_weighted.number_of_nodes()} nodes and {G_weighted.number_of_edges()} valid quantum edges!")
 print(np.array_equal(edge_CV + edge_DV, A))
 
+def classifiying_node(G, node): # This is just to rpove that most nodes aren't just CV or DV byt hybrid
+    neighbors = list(G.neighbors(node))
+    if len(neighbors) == 1:
+        return 'edge'
+    elif all(edge_CV[node, neighbor] for neighbor in neighbors):
+        return 'CV'
+    elif all(edge_DV[node, neighbor] for neighbor in neighbors):
+        return 'DV'
+    else:
+        return 'hybrid'
+
+# Classify each node and store the results in a dictionary
+node_classification = {}
+for node in G_weighted.nodes():
+    node_classification[node] = classifiying_node(G_weighted, node)
+
+def energy_cost(G, edge_cost, CV_cost, DV_cost):
+    node_energy = np.zeros_like(G.nodes())
+    for node in G.nodes():
+        neighbors = list(G.neighbors(node))
+        if len(neighbors) == 1:
+            node_energy[node] = edge_cost
+        else:
+            n_CV = sum(edge_CV[node, neighbor] for neighbor in neighbors)
+            n_DV = sum(edge_DV[node, neighbor] for neighbor in neighbors)
+            node_energy[node] = np.ceil(n_CV /20) * CV_cost + DV_cost
+    total_energy = sum(node_energy)
+    return node_energy, total_energy
+
+node_energy, total_energy = energy_cost(G_weighted, edge_cost=1, CV_cost=5, DV_cost=10)
+print(total_energy)
