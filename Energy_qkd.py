@@ -1,10 +1,20 @@
 import numpy as np
 import networkx as nx
+import time
+import random
 
 # Import the custom functions from your environment
 from network_funcs import *
 from qopt_funcs import *
 
+def optimal_path_algo(G, target, algo='serial'):
+    if algo == 'serial':
+        return nx.single_source_dijkstra(G, target, weight='weight')
+    elif algo == 'parallel':
+        return least_maximum_weight_path(G, target)
+    else:
+        print('wrong algo option in optimal_path_algo')
+        return
 # --- 1. BASIC NETWORK SETUP ---
 N = 100  # Number of nodes
 radius = 45
@@ -42,68 +52,19 @@ keyrates = np.zeros(n_ds)
 for i in range(n_ds):
     keyrates[i] = hybrid_keyrate_bitpersec(state_of_the_art_params, d_set[i], d_hybrid)
 
-# --- 4. GENERATE RAW GRAPH ---
-print("Generating raw S2 network...")
-# A: Adjacency matrix (1 if connected, 0 if not)
-# Dists: Matrix of angular distances between nodes
-A, Dists = S2_graph_definite_N(N, beta, mu, return_coords=False)
 
-# --- 5. BUILD THE WEIGHTED GRAPH ---
-print("Applying quantum weights to graph edges...")
-W = np.zeros_like(A)  # Empty matrix to store our actual weights
-edge_CV = np.zeros_like(A) # Tells you if edge is CV
-edge_DV = np.zeros_like(A) # Tells you if edge is DV
-
-# Loop through every possible pair of nodes
-A_pruned = np.zeros_like(A)
-for i in range(N):
-    for j in range(i):  # Only check lower triangle (since graph is undirected)
-        # If the raw graph says they are connected
-        if A[i, j] == 1:
-
-            # Calculate actual geographic distance
-            dij = radius * Dists[i, j]
-
-            # Find the closest matching distance in our pre-computed table
-            idx_d = np.argmin(abs(dij - d_set))
-            h_rate = keyrates[idx_d]
-
-            # PRUNING: Only proceed if the link physically works!
-            if dij < d_c_DV and h_rate > rate_min:
-
-                # Store the INVERSE of the rate as the weight
-                W[i, j] = W[j, i] = h_rate ** -1
-
-                A_pruned[i,j] = A_pruned[j,i] = 1
-
-                # NOW classify it as CV or DV (since we know it exists)
-                if dij >= d_hybrid:
-                    edge_DV[i, j] = edge_DV[j, i] = True
-                else:
-                    edge_CV[i, j] = edge_CV[j, i] = True
-
-# Convert the NumPy weight matrix into a usable NetworkX graph object
-G_pruned = nx.from_numpy_array(W)
-
-print(
-    f"Graph generated successfully with {G_pruned.number_of_nodes()} nodes and {G_pruned.number_of_edges()} valid quantum edges!")
-print(np.array_equal(edge_CV + edge_DV, A_pruned))
-
-def classifiying_node(G, node): # This is just to rpove that most nodes aren't just CV or DV byt hybrid
+def classifiying_node(G, node, current_edge_CV, current_edge_DV):
     neighbors = list(G.neighbors(node))
-    if len(neighbors) == 1:
-        return 'edge'
-    elif all(edge_CV[node, neighbor] for neighbor in neighbors):
+    # If a node didn't survive pruning and has no connections
+    if len(neighbors) == 0:
+        return 'isolated'
+
+    if all(current_edge_CV[node, neighbor] for neighbor in neighbors):
         return 'CV'
-    elif all(edge_DV[node, neighbor] for neighbor in neighbors):
+    elif all(current_edge_DV[node, neighbor] for neighbor in neighbors):
         return 'DV'
     else:
         return 'hybrid'
-
-# Classify each node and store the results in a dictionary
-node_classification = {}
-for node in G_pruned.nodes():
-    node_classification[node] = classifiying_node(G_pruned, node)
 
 
 def power_cost(G, edge_CV, edge_DV, include_true_dsp_cost=False):
@@ -113,14 +74,15 @@ def power_cost(G, edge_CV, edge_DV, include_true_dsp_cost=False):
 
     # Base node overhead (standard computer)
     base_computer_W = 100.0
+    shared_laser = 4.2
 
     # DV connection hardware (Laser, AM Modulator, Time Tagger)
-    dv_edge_optical_W = 4.2 + 26.0 + 22.0
+    dv_edge_optical_W = 26.0 + 22.0
     # SNSPDs share a massive helium compressor (cryostat) supporting ~20 edges
     dv_cryostat_W = 2735.0
 
     # CV connection optical hardware (Laser, IQ Mod, BHD, DAC, ADC)
-    cv_edge_optical_W = 4.2 + 5.4 + 6.8 + 40.0 + 20.0
+    cv_edge_optical_W = 5.4 + 6.8 + 40.0 + 20.0
 
     # CV requires heavy digital signal processing (DSP) to recover analog waveforms.
     # True cost assumes real-time processing: 0.0003 Joules/symbol * 100 MHz laser = 30,000 W.
@@ -140,11 +102,16 @@ def power_cost(G, edge_CV, edge_DV, include_true_dsp_cost=False):
         n_CV = sum(edge_CV[node, neighbor] for neighbor in neighbors)
         n_DV = sum(edge_DV[node, neighbor] for neighbor in neighbors)
 
+        if (n_CV + n_DV) > 0:
+            power += shared_laser
+
+        # DV specific hardware
         if n_DV > 0:
             power += (n_DV * dv_edge_optical_W)
             # Add a new cryostat for every 20 DV connections
             power += np.ceil(n_DV / 20) * dv_cryostat_W
 
+        # CV specific hardware
         if n_CV > 0:
             power += (n_CV * cv_total_edge_W)
 
@@ -155,7 +122,7 @@ def power_cost(G, edge_CV, edge_DV, include_true_dsp_cost=False):
 
     return node_power, total_power
 
-def avg_SKR(G_pruned):
+def avg_SKR_sample(G_pruned):
     # Isolate the main connected network (giant component)
     comp_list = sorted(nx.connected_components(G_pruned), key=len, reverse=True)
     G_giant = G_pruned.subgraph(comp_list[0])
@@ -187,11 +154,33 @@ def avg_SKR(G_pruned):
     # print(f"Average Secret Key Rate for the network: {average_skr:.4f} bits/sec")
     return average_skr
 
+def avg_SKR(G_pruned, routing_mode='serial'):
+    comp_list = sorted(nx.connected_components(G_pruned), key=len, reverse=True)
+    G_giant = G_pruned.subgraph(comp_list[0])
+    giant_nodes = list(G_giant.nodes())
 
-def calculate_energy_efficiency(G):
+    # Calculate the routing between every node in the giant component
+    rates = []
+    for i in range(len(giant_nodes)):
+        target = giant_nodes[i]
+        weights, paths = optimal_path_algo(G_pruned, target, algo=routing_mode)
+
+        for source in giant_nodes[:i]:
+            if source in weights:
+                rates.append(weights[source] ** -1)
+            else:
+                rates.append(0)
+
+    # Final metrics for this specific network layout
+    avg_skr = np.average(rates) if rates else 0
+    return avg_skr
+
+
+
+def calculate_energy_efficiency(G, routing_mode='serial'):
 
     # Get the average Secret Key Rate
-    average_SKR = avg_SKR(G)
+    average_SKR = avg_SKR(G, routing_mode=routing_mode)
 
     # Get the total power consumption
     _, total_power = power_cost(G, edge_CV, edge_DV, include_true_dsp_cost=False)
@@ -210,4 +199,218 @@ def calculate_energy_efficiency(G):
 
 
 # Run the function and store the result
-network_EE = calculate_energy_efficiency(G_pruned)
+#network_EE = calculate_energy_efficiency(G_pruned)
+
+def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='serial'):
+    print(f"\n========================================================")
+    print(f" TOPOLOGY DIAGNOSTIC: Testing {num_runs} Unique Network Layouts ")
+    print(f"========================================================")
+
+    run_powers = []
+    run_skrs = []
+    run_ees = []
+
+    for run in range(num_runs):
+        # Generate a brand new raw S2 network layout
+        A, Dists = S2_graph_definite_N(N, beta, mu, return_coords=False)
+
+        # Initialize pruning and edge classification matrices
+        W = np.zeros_like(A)
+        edge_CV = np.zeros_like(A, dtype=bool)
+        edge_DV = np.zeros_like(A, dtype=bool)
+
+        # Prune edges and apply quantum weights
+        for i in range(N):
+            for j in range(i):
+                if A[i, j] == 1:
+                    dij = radius * Dists[i, j]
+                    idx_d = np.argmin(abs(dij - d_set))
+                    h_rate = keyrates[idx_d]
+
+                    if dij < d_c_DV and h_rate > rate_min:
+                        W[i, j] = W[j, i] = h_rate ** -1
+
+                        if dij >= d_hybrid:
+                            edge_DV[i, j] = edge_DV[j, i] = True
+                        else:
+                            edge_CV[i, j] = edge_CV[j, i] = True
+
+        G_pruned = nx.from_numpy_array(W)
+
+        # Calculate the deterministic power for this specific layout
+        _, total_power = power_cost(G_pruned, edge_CV, edge_DV, include_true_dsp_cost=False)
+
+        avg_skr = avg_SKR(G_pruned, routing_mode=routing_mode)
+        ee = avg_skr / total_power if total_power > 0 else 0
+
+        run_powers.append(total_power)
+        run_skrs.append(avg_skr)
+        run_ees.append(ee)
+
+        print(f"Graph Layout {run + 1} -> Power: {total_power:,.0f} W | SKR: {avg_skr:,.2f} bps | EE: {ee:,.8f} bits/J")
+
+    avg_power = np.average(run_powers)
+    avg_SKR_all = np.average(run_skrs)
+    avg_EE = np.average(run_ees)
+    # Analyze the variance across the different layouts
+    print("\n--- AVERAGE RESULTS ACROSS ALL RUNS ---")
+    print(f"Avg Power: {avg_power:,.0f} W | Avg SKR: {avg_SKR_all:,.2f} bps | Avg EE: {avg_EE:,.8f} bits/J")
+    return run_powers, run_skrs, run_ees, avg_power, avg_SKR_all, avg_EE
+
+if __name__ == "__main__":
+    # Put your loose executable code/prints in here
+    network_energy_efficiency(num_runs=5, N=500, radius=45, routing_mode='serial')
+
+def topology_variance_diagnostic(num_runs=5, N=100, radius=45):
+    print(f"\n========================================================")
+    print(f" TOPOLOGY DIAGNOSTIC: Testing {num_runs} Unique Network Layouts ")
+    print(f"========================================================")
+
+    run_powers = []
+    run_skrs = []
+    run_ees = []
+
+    for run in range(num_runs):
+        # Generate a brand new raw S2 network layout
+        A, Dists = S2_graph_definite_N(N, beta, mu, return_coords=False)
+
+        # Initialize pruning and edge classification matrices
+        W = np.zeros_like(A)
+        edge_CV = np.zeros_like(A, dtype=bool)
+        edge_DV = np.zeros_like(A, dtype=bool)
+
+        # Prune edges and apply quantum weights
+        for i in range(N):
+            for j in range(i):
+                if A[i, j] == 1:
+                    dij = radius * Dists[i, j]
+                    idx_d = np.argmin(abs(dij - d_set))
+                    h_rate = keyrates[idx_d]
+
+                    if dij < d_c_DV and h_rate > rate_min:
+                        W[i, j] = W[j, i] = h_rate ** -1
+
+                        if dij >= d_hybrid:
+                            edge_DV[i, j] = edge_DV[j, i] = True
+                        else:
+                            edge_CV[i, j] = edge_CV[j, i] = True
+
+        G_pruned = nx.from_numpy_array(W)
+
+        # Calculate the deterministic power for this specific layout
+        _, total_power = power_cost(G_pruned, edge_CV, edge_DV, include_true_dsp_cost=False)
+
+        # Isolate the main connected network to calculate True SKR
+        comp_list = sorted(nx.connected_components(G_pruned), key=len, reverse=True)
+        G_giant = G_pruned.subgraph(comp_list[0])
+        giant_nodes = list(G_giant.nodes())
+
+        # Calculate the routing between EVERY node in the giant component
+        rates = []
+        for i in range(len(giant_nodes)):
+            target = giant_nodes[i]
+            weights = nx.single_source_dijkstra_path_length(G_pruned, target, weight='weight')
+
+            for source in giant_nodes[:i]:
+                if source in weights:
+                    rates.append(weights[source] ** -1)
+                else:
+                    rates.append(0)
+
+        # Final metrics for this specific network layout
+        avg_skr = np.average(rates) if rates else 0
+        ee = avg_skr / total_power if total_power > 0 else 0
+
+        run_powers.append(total_power)
+        run_skrs.append(avg_skr)
+        run_ees.append(ee)
+
+        print(f"Graph Layout {run + 1} -> Power: {total_power:,.0f} W | SKR: {avg_skr:,.2f} bps | EE: {ee:,.8f} bits/J")
+
+    # Analyze the variance across the different layouts
+    print("\n--- VARIANCE ACROSS DIFFERENT TOPOLOGIES ---")
+    print(
+        f"Power Spread: {min(run_powers):,.0f} W to {max(run_powers):,.0f} W (Diff: {max(run_powers) / min(run_powers):.2f}x)")
+    print(
+        f"SKR Spread:   {min(run_skrs):,.2f} bps to {max(run_skrs):,.2f} bps (Diff: {max(run_skrs) / min(run_skrs):.2f}x)")
+    print(
+        f"EE Spread:    {min(run_ees):,.8f} bits/J to {max(run_ees):,.8f} bits/J (Diff: {max(run_ees) / min(run_ees):.2f}x)")
+
+
+# Call this at the bottom of your script, passing your variables
+# topology_variance_diagnostic(num_runs=10)
+
+def diagnose_sampling_time_and_variance(G, sample_size=20, num_samples=5, routing_mode='serial'):
+    print(f"\n{'=' * 60}")
+    print(f" SAMPLING DIAGNOSTIC: {sample_size}-Node Sample vs True Network ")
+    print(f" Routing Mode: {routing_mode.upper()}")
+    print(f"{'=' * 60}")
+
+    comp_list = sorted(nx.connected_components(G), key=len, reverse=True)
+    G_giant = G.subgraph(comp_list[0])
+    giant_nodes = list(G_giant.nodes())
+
+    print(f"Nodes in Giant Component: {len(giant_nodes)}")
+
+    print(f"\n--- Running {num_samples} Random Samples ({sample_size} nodes each) ---")
+    sample_skrs = []
+    sample_times = []
+
+    for run in range(num_samples):
+        start_time = time.time()
+
+        random.shuffle(giant_nodes)
+        sample_nodes = giant_nodes[:sample_size]
+
+        rates = []
+        for i in range(len(sample_nodes)):
+            target = sample_nodes[i]
+
+            # --- THE NEW FUNCTION CALL ---
+            # Unpack the returned tuple into 'weights' and 'paths'
+            weights, paths = optimal_path_algo(G, target, algo=routing_mode)
+
+            for source in sample_nodes[:i]:
+                if source in weights:
+                    rates.append(weights[source] ** -1)
+                else:
+                    rates.append(0)
+
+        sample_skr = np.average(rates)
+        run_time = time.time() - start_time
+
+        sample_skrs.append(sample_skr)
+        sample_times.append(run_time)
+        print(f"  Sample {run + 1}: SKR = {sample_skr:,.2f} bps | Time = {run_time:.4f} seconds")
+
+    print("\n--- Running TRUE Network Calculation (All connected nodes) ---")
+    start_time_true = time.time()
+
+    true_rates = []
+    for i in range(len(giant_nodes)):
+        target = giant_nodes[i]
+
+        # --- THE NEW FUNCTION CALL ---
+        weights, paths = optimal_path_algo(G, target, algo=routing_mode)
+
+        for source in giant_nodes[:i]:
+            if source in weights:
+                true_rates.append(weights[source] ** -1)
+            else:
+                true_rates.append(0)
+
+    true_skr = np.average(true_rates)
+    true_time = time.time() - start_time_true
+
+    print(f"  TRUE SKR: {true_skr:,.2f} bps | Time = {true_time:.4f} seconds")
+
+    print("\n--- FINAL ANALYSIS ---")
+    skr_spread = max(sample_skrs) / min(sample_skrs) if min--(sample_skrs) > 0 else float('inf')
+    avg_sample_time = np.average(sample_times)
+
+    print(f"SKR Variance: {skr_spread:.2f}x spread (Max: {max(sample_skrs):,.0f}, Min: {min(sample_skrs):,.0f})")
+    print(f"Time Savings: True run took {true_time:.4f}s. Average sample took {avg_sample_time:.4f}s.")
+
+    return true_skr, true_time
+
+# diagnose_sampling_time_and_variance(G_pruned, sample_size=20, num_samples=5, routing_mode='serial')
