@@ -22,7 +22,7 @@ class SimulationConfig:
     sample_from_file: bool = False
     n_iter: int = 10
     laplacian_spectrum_n_eigs: int = 100
-    budget_list: list = field(default_factory=lambda: [0] + [2 ** expo for expo in range(4, 11, 2)])
+    budget_list: list = field(default_factory=lambda: [0] + [2 ** expo for expo in range(4, 11, 1)] + [np.inf])
 
 
 def optimal_path_algo(G, target, algo='serial'):
@@ -318,10 +318,10 @@ def rank_candidate_dv_edges(candidate_DV_edges, G_pruned, ranking_criterion):
         if ranking_criterion == 'random':
             return np.random.random()
 
-        if ranking_criterion == 'geodetic_distance':
+        if ranking_criterion == 'increasing_geodetic_distance' or ranking_criterion == 'decreasing_geodetic_distance':
             return geo_distance
 
-        if ranking_criterion == 'topological_distance':
+        if ranking_criterion == 'increasing_topological_distance' or ranking_criterion == 'decreasing_topological_distance':
             try:
                 return nx.shortest_path_length(G_pruned, i, j)
             except nx.NetworkXNoPath:
@@ -332,7 +332,7 @@ def rank_candidate_dv_edges(candidate_DV_edges, G_pruned, ranking_criterion):
 
         return edge_centrality.get((i, j), 0)
 
-    reverse_sort = ranking_criterion in ['centrality', 'random', 'degree']
+    reverse_sort = ranking_criterion in ['centrality', 'random', 'degree', 'decreasing_geodetic_distance', 'decreasing_topological_distance']
     return sorted(candidate_DV_edges, key=dv_edge_score, reverse=reverse_sort)
 
 

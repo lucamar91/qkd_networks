@@ -21,7 +21,7 @@ from budget_config import *
 # prunes it once per radius, ranks the candidate DV edges once per criterion, and then evaluates
 # all requested DV budgets from the same ranked edge list.
 
-Ns = [500]                    # list of network sizes
+Ns = [150]                    # list of network sizes
 
 cfg = SimulationConfig(
     rate_min=0.0,
@@ -39,11 +39,15 @@ reconciliation = 'reverse'    # type of reconciliation
 budget_list = cfg.budget_list
 print(budget_list)
 candidate_ranking_criteria = [
-    'degree',
     'centrality',
-    'geodetic_distance',
-    'topological_distance',
+    # 'geodetic_distance',
+    'increasing_geodetic_distance',
+    'decreasing_geodetic_distance',
+    'increasing_topological_distance',
+    'decreasing_topological_distance',
+    # 'topological_distance',
     'random',
+    'degree',
 ]
 
 ####### The state-of-the-art values for the following params are usually kept fixed and assigned in qopt_funcs.py ##########
@@ -289,7 +293,7 @@ for N in Ns:
                             weights, paths = optimal_path_algo(G_budget, target, algo=cfg.keyrate_algo)
 
                             for source in range(target):
-                                if source in weights:
+                                if source in weights and source in paths:
                                     stats['rate_lists_dijkstra'][radius].append(weights[source] ** -1)
                                     stats['len_lists_dijkstra'][radius].append(len(paths[source]) - 1)
                                 else:
@@ -333,16 +337,6 @@ for N in Ns:
 
     os.chdir(base_dir)
 
-'''# needed for execution on the cluster: move the already saved files in a local folder
-output_dir = 'outputs'
-if not os.path.exists(output_dir):
-    os.makedirs(output_dir)
-
-if os.path.abspath(output_dir) != os.path.abspath(os.path.join(output_dir, 'outputs')):
-    for filename in os.listdir('.'):
-        if filename.startswith('out') and os.path.isfile(filename):
-            shutil.move(filename, os.path.join(output_dir, filename))
-'''
 
 end = time.time()
 print('Execution took %.f seconds.' % (end - start))
