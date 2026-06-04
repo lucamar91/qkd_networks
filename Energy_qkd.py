@@ -154,7 +154,7 @@ def avg_SKR_sample(G_pruned):
     # print(f"Average Secret Key Rate for the network: {average_skr:.4f} bits/sec")
     return average_skr
 
-def avg_SKR(G_pruned, routing_mode='serial'):
+def avg_SKR_giant(G_pruned, routing_mode='serial'):
     comp_list = sorted(nx.connected_components(G_pruned), key=len, reverse=True)
     G_giant = G_pruned.subgraph(comp_list[0])
     giant_nodes = list(G_giant.nodes())
@@ -169,6 +169,31 @@ def avg_SKR(G_pruned, routing_mode='serial'):
             if source in weights:
                 rates.append(weights[source] ** -1)
             else:
+                rates.append(0)
+
+    # Final metrics for this specific network layout
+    avg_skr = np.average(rates) if rates else 0
+    return avg_skr
+
+
+def avg_SKR(G_pruned, routing_mode='parallel'):
+    # Get a list of ALL nodes in the entire network
+    all_nodes = list(G_pruned.nodes())
+
+    # Calculate the routing between every single node pair
+    rates = []
+    for i in range(len(all_nodes)):
+        target = all_nodes[i]
+
+        # Calculate optimal paths from the target to all reachable nodes
+        weights, paths = optimal_path_algo(G_pruned, target, algo=routing_mode)
+
+        # Iterate through all possible source nodes (avoiding double-counting)
+        for source in all_nodes[:i]:
+            if source in weights:
+                rates.append(weights[source] ** -1)
+            else:
+                # If the nodes are disconnected (e.g., stranded in different components)
                 rates.append(0)
 
     # Final metrics for this specific network layout
@@ -201,7 +226,7 @@ def calculate_energy_efficiency(G, routing_mode='serial'):
 # Run the function and store the result
 #network_EE = calculate_energy_efficiency(G_pruned)
 
-def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='serial'):
+def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='parallel', include_true_dsp_cost=False):
     print(f"\n========================================================")
     print(f" TOPOLOGY DIAGNOSTIC: Testing {num_runs} Unique Network Layouts ")
     print(f"========================================================")
@@ -238,7 +263,7 @@ def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='serial
         G_pruned = nx.from_numpy_array(W)
 
         # Calculate the deterministic power for this specific layout
-        _, total_power = power_cost(G_pruned, edge_CV, edge_DV, include_true_dsp_cost=False)
+        _, total_power = power_cost(G_pruned, edge_CV, edge_DV, include_true_dsp_cost=include_true_dsp_cost)
 
         avg_skr = avg_SKR(G_pruned, routing_mode=routing_mode)
         ee = avg_skr / total_power if total_power > 0 else 0
@@ -260,6 +285,71 @@ def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='serial
 if __name__ == "__main__":
     # Put your loose executable code/prints in here
     network_energy_efficiency(num_runs=5, N=500, radius=45, routing_mode='serial')
+
+
+def ee_comparison_diagnostic(N_values, radius=200, runs=3, routing_mode='serial'):
+    print(f"\n{'=' * 60}")
+    print(f" EE COMPARISON DIAGNOSTIC (Radius = {radius} km) ")
+    print(f"{'=' * 60}")
+
+    comparison_data = []
+
+    for n_val in N_values:
+        for _ in range(runs):
+            A, Dists = S2_graph_definite_N(n_val, beta, mu, return_coords=False)
+            W, edge_CV, edge_DV = np.zeros_like(A), np.zeros_like(A), np.zeros_like(A)
+
+            for i in range(n_val):
+                for j in range(i):
+                    if A[i, j] == 1:
+                        dij = radius * Dists[i, j]
+                        idx_d = np.argmin(abs(dij - d_set))
+                        h_rate = keyrates[idx_d]
+                        if dij < d_c_DV and h_rate > rate_min:
+                            W[i, j] = W[j, i] = h_rate ** -1
+                            if dij >= d_hybrid:
+                                edge_DV[i, j] = edge_DV[j, i] = True
+                            else:
+                                edge_CV[i, j] = edge_CV[j, i] = True
+
+            G = nx.from_numpy_array(W)
+            _, total_power = power_cost(G, edge_CV, edge_DV, include_true_dsp_cost=True)
+
+            if total_power == 0:
+                continue
+
+            # --- 1. GIANT COMPONENT CALCULATION ---
+            comp_list = sorted(nx.connected_components(G), key=len, reverse=True)
+            G_giant = G.subgraph(comp_list[0]) if comp_list else G.subgraph([])
+            giant_nodes = list(G_giant.nodes())
+
+            giant_rates = []
+            for i in range(len(giant_nodes)):
+                target = giant_nodes[i]
+                weights, _ = optimal_path_algo(G, target, algo=routing_mode)
+                for source in giant_nodes[:i]:
+                    giant_rates.append(weights[source] ** -1 if source in weights else 0)
+            avg_skr_giant = np.average(giant_rates) if giant_rates else 0
+
+            # --- 2. ALL NODES CALCULATION ---
+            all_nodes = list(G.nodes())
+            all_rates = []
+            for i in range(len(all_nodes)):
+                target = all_nodes[i]
+                weights, _ = optimal_path_algo(G, target, algo=routing_mode)
+                for source in all_nodes[:i]:
+                    all_rates.append(weights[source] ** -1 if source in weights else 0)
+            avg_skr_all = np.average(all_rates) if all_rates else 0
+
+            comparison_data.append({
+                'N': n_val,
+                'EE (Giant Component)': avg_skr_giant / total_power,
+                'EE (All Nodes)': avg_skr_all / total_power
+            })
+
+        print(f"Completed N={n_val}")
+
+    return comparison_data
 
 def topology_variance_diagnostic(num_runs=5, N=100, radius=45):
     print(f"\n========================================================")
