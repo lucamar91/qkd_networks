@@ -177,28 +177,30 @@ def avg_SKR_giant(G_pruned, routing_mode='serial'):
 
 
 def avg_SKR(G_pruned, routing_mode='parallel'):
-    # Get a list of ALL nodes in the entire network
     all_nodes = list(G_pruned.nodes())
-
-    # Calculate the routing between every single node pair
     rates = []
+
+    connected_pairs = 0
+    total_pairs = 0
+
     for i in range(len(all_nodes)):
         target = all_nodes[i]
-
-        # Calculate optimal paths from the target to all reachable nodes
         weights, paths = optimal_path_algo(G_pruned, target, algo=routing_mode)
 
-        # Iterate through all possible source nodes (avoiding double-counting)
         for source in all_nodes[:i]:
-            if source in weights:
+            total_pairs += 1
+
+            if source in weights and weights[source] != float('inf'):
                 rates.append(weights[source] ** -1)
+                connected_pairs += 1
             else:
-                # If the nodes are disconnected (e.g., stranded in different components)
                 rates.append(0)
 
-    # Final metrics for this specific network layout
+    # Calculate final metrics
     avg_skr = np.average(rates) if rates else 0
-    return avg_skr
+    reachability = connected_pairs / total_pairs if total_pairs > 0 else 0
+
+    return avg_skr, reachability
 
 
 
@@ -226,7 +228,7 @@ def calculate_energy_efficiency(G, routing_mode='serial'):
 # Run the function and store the result
 #network_EE = calculate_energy_efficiency(G_pruned)
 
-def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='parallel', include_true_dsp_cost=False):
+def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='parallel', include_true_dsp_cost=False, type = 'hybrid'):
     print(f"\n========================================================")
     print(f" TOPOLOGY DIAGNOSTIC: Testing {num_runs} Unique Network Layouts ")
     print(f"========================================================")
@@ -234,6 +236,7 @@ def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='parall
     run_powers = []
     run_skrs = []
     run_ees = []
+    run_reach = []
 
     for run in range(num_runs):
         # Generate a brand new raw S2 network layout
@@ -241,50 +244,85 @@ def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='parall
 
         # Initialize pruning and edge classification matrices
         W = np.zeros_like(A)
-        edge_CV = np.zeros_like(A, dtype=bool)
-        edge_DV = np.zeros_like(A, dtype=bool)
 
-        # Prune edges and apply quantum weights
-        for i in range(N):
-            for j in range(i):
-                if A[i, j] == 1:
-                    dij = radius * Dists[i, j]
-                    idx_d = np.argmin(abs(dij - d_set))
-                    h_rate = keyrates[idx_d]
+        if type == 'hybrid':
+            edge_CV = np.zeros_like(A, dtype=bool)
+            edge_DV = np.zeros_like(A, dtype=bool)
 
-                    if dij < d_c_DV and h_rate > rate_min:
-                        W[i, j] = W[j, i] = h_rate ** -1
+            # Prune edges and apply quantum weights
+            for i in range(N):
+                for j in range(i):
+                    if A[i, j] == 1:
+                        dij = radius * Dists[i, j]
+                        idx_d = np.argmin(abs(dij - d_set))
+                        h_rate = keyrates[idx_d]
 
-                        if dij >= d_hybrid:
-                            edge_DV[i, j] = edge_DV[j, i] = True
-                        else:
-                            edge_CV[i, j] = edge_CV[j, i] = True
+                        if dij < d_c_DV and h_rate > rate_min:
+                            W[i, j] = W[j, i] = h_rate ** -1
+
+                            if dij >= d_hybrid:
+                                edge_DV[i, j] = edge_DV[j, i] = True
+                            else:
+                                edge_CV[i, j] = edge_CV[j, i] = True
+        elif type == 'CV':
+            edge_CV = np.zeros_like(A, dtype=bool)
+            edge_DV = np.zeros_like(A, dtype=bool)
+
+            for i in range(N):
+                for j in range(i):
+                    if A[i, j] == 1:
+                        dij = radius * Dists[i, j]
+                        # Check physical limit for pure CV
+                        if dij < d_c_CV:
+                            h_rate = func_CV(dij)  # Pure CV rate
+                            if h_rate > rate_min:
+                                W[i, j] = W[j, i] = h_rate ** -1
+                                edge_CV[i, j] = edge_CV[j, i] = True
+
+        elif type == 'DV':
+            edge_CV = np.zeros_like(A, dtype=bool)
+            edge_DV = np.zeros_like(A, dtype=bool)
+
+            for i in range(N):
+                for j in range(i):
+                    if A[i, j] == 1:
+                        dij = radius * Dists[i, j]
+                        # Check physical limit for pure DV
+                        if dij < d_c_DV:
+                            h_rate = func_DV(dij)  # Pure DV rate
+                            if h_rate > rate_min:
+                                W[i, j] = W[j, i] = h_rate ** -1
+                                edge_DV[i, j] = edge_DV[j, i] = True
+        else:
+            raise ValueError("type must be 'hybrid', 'CV' or 'DV'")
 
         G_pruned = nx.from_numpy_array(W)
 
         # Calculate the deterministic power for this specific layout
         _, total_power = power_cost(G_pruned, edge_CV, edge_DV, include_true_dsp_cost=include_true_dsp_cost)
 
-        avg_skr = avg_SKR(G_pruned, routing_mode=routing_mode)
+        avg_skr, reachability = avg_SKR(G_pruned, routing_mode=routing_mode)
         ee = avg_skr / total_power if total_power > 0 else 0
 
         run_powers.append(total_power)
         run_skrs.append(avg_skr)
         run_ees.append(ee)
+        run_reach.append(reachability)
 
         print(f"Graph Layout {run + 1} -> Power: {total_power:,.0f} W | SKR: {avg_skr:,.2f} bps | EE: {ee:,.8f} bits/J")
 
     avg_power = np.average(run_powers)
     avg_SKR_all = np.average(run_skrs)
     avg_EE = np.average(run_ees)
+    avg_reach = np.average(run_reach)
     # Analyze the variance across the different layouts
     print("\n--- AVERAGE RESULTS ACROSS ALL RUNS ---")
     print(f"Avg Power: {avg_power:,.0f} W | Avg SKR: {avg_SKR_all:,.2f} bps | Avg EE: {avg_EE:,.8f} bits/J")
-    return run_powers, run_skrs, run_ees, avg_power, avg_SKR_all, avg_EE
+    return run_powers, run_skrs, run_ees, avg_power, avg_SKR_all, avg_EE, avg_reach
 
 if __name__ == "__main__":
     # Put your loose executable code/prints in here
-    network_energy_efficiency(num_runs=5, N=500, radius=45, routing_mode='serial')
+    network_energy_efficiency(num_runs=5, N=500, radius=45, routing_mode='serial', type='DV')
 
 
 def ee_comparison_diagnostic(N_values, radius=200, runs=3, routing_mode='serial'):
