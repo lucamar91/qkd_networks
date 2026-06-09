@@ -190,7 +190,8 @@ def avg_SKR(G_pruned, routing_mode='parallel'):
         for source in all_nodes[:i]:
             total_pairs += 1
 
-            if source in weights and weights[source] != float('inf'):
+            # Valid weights are always mathematically less than infinity
+            if source in weights and weights[source] < float('inf'):
                 rates.append(weights[source] ** -1)
                 connected_pairs += 1
             else:
@@ -309,7 +310,7 @@ def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='parall
         run_ees.append(ee)
         run_reach.append(reachability)
 
-        print(f"Graph Layout {run + 1} -> Power: {total_power:,.0f} W | SKR: {avg_skr:,.2f} bps | EE: {ee:,.8f} bits/J")
+        print(f"Graph Layout {run + 1} -> Power: {total_power:,.0f} W | SKR: {avg_skr:,.2f} bps | EE: {ee:,.8f} bits/J | REACH: {reachability*100:,.2f} %")
 
     avg_power = np.average(run_powers)
     avg_SKR_all = np.average(run_skrs)
@@ -317,15 +318,15 @@ def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='parall
     avg_reach = np.average(run_reach)
     # Analyze the variance across the different layouts
     print("\n--- AVERAGE RESULTS ACROSS ALL RUNS ---")
-    print(f"Avg Power: {avg_power:,.0f} W | Avg SKR: {avg_SKR_all:,.2f} bps | Avg EE: {avg_EE:,.8f} bits/J")
+    print(f"Avg Power: {avg_power:,.0f} W | Avg SKR: {avg_SKR_all:,.2f} bps | Avg EE: {avg_EE:,.8f} bits/J | AVG REACH: {avg_reach*100:,.2f} %")
     return run_powers, run_skrs, run_ees, avg_power, avg_SKR_all, avg_EE, avg_reach
 
 if __name__ == "__main__":
     # Put your loose executable code/prints in here
-    network_energy_efficiency(num_runs=5, N=500, radius=45, routing_mode='serial', type='DV')
+    network_energy_efficiency(num_runs=5, N=500, radius=200, routing_mode='parallel', type='hybrid')
 
 
-def ee_comparison_diagnostic(N_values, radius=200, runs=3, routing_mode='serial'):
+def ee_comparison_diagnostic(N_values, radius=45, runs=3, routing_mode='hybrid'):
     print(f"\n{'=' * 60}")
     print(f" EE COMPARISON DIAGNOSTIC (Radius = {radius} km) ")
     print(f"{'=' * 60}")
