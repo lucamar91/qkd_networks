@@ -325,7 +325,7 @@ class QuantumNetworkBuilder:
         print("Map successfully saved as 'quantum_network_map.html'!")
 
 df = pd.read_csv('final_city_coordinates.csv')
-arch = QuantumNetworkBuilder(df, backbone_strategy='hybrid', country_strategy='hybrid')
+arch = QuantumNetworkBuilder(df, backbone_strategy='hybrid', country_strategy='by_population')
 G = arch.generate_european_backbone()
 G = arch.generate_country()
 arch.plot_network(G)
