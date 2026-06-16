@@ -1152,155 +1152,6 @@ class QuantumNetworkBuilder_App2:
         print(f"Tier 2 complete! Total Nodes: {self.G.number_of_nodes()}, Links: {self.G.number_of_edges()}")
         return self.G
 
-    def generate_tier3(self):
-        print("Generating Tier 3 Switches (Real Cities Only)...")
-        t3_names = []
-        t3_coords_rad = []
-        for idx, row in self.tier3_df.iterrows():
-            name = row['city_name']
-            self.G.add_node(name, pos=(row['longitude'], row['latitude']),
-                            type='Tier3_Switch', pop=row['population'], color='#00FF00')
-            t3_names.append(name)
-            t3_coords_rad.append([np.radians(row['latitude']), np.radians(row['longitude'])])
-        t3_coords_rad = np.array(t3_coords_rad)
-
-        t2_nodes = [n for n, attr in self.G.nodes(data=True) if attr.get('type') == 'Tier2_Aggregator']
-        t2_coords_rad = np.array(
-            [[np.radians(self.G.nodes[n]['pos'][1]), np.radians(self.G.nodes[n]['pos'][0])] for n in t2_nodes])
-
-        if len(t3_coords_rad) > 0 and len(t2_coords_rad) > 0:
-            t2_tree = BallTree(t2_coords_rad, metric='haversine')
-            distances, indices = t2_tree.query(t3_coords_rad, k=1)
-            for i, t3_name in enumerate(t3_names):
-                t2_idx = indices[i][0]
-                t2_name = t2_nodes[t2_idx]
-                dist_km = distances[i][0] * 6371
-                self.G.add_edge(t3_name, t2_name, weight=dist_km, edge_type='T3_to_T2', color='#00FF00')
-
-        print(f"Tier 3 complete! Total Nodes: {self.G.number_of_nodes()}, Links: {self.G.number_of_edges()}")
-        return self.G
-
-    def generate_tier4(self, total_switches=500, total_users=3000, target_countries=['Spain', 'United Kingdom']):
-        print(f"Generating Tier 4: Spatially-Embedded Dual BA (Filtered for {target_countries})...")
-
-        active_nodes = list(self.G.nodes())
-        active_coords = np.array(
-            [[np.radians(self.G.nodes[n]['pos'][1]), np.radians(self.G.nodes[n]['pos'][0])] for n in active_nodes])
-
-        # Build the Voronoi tree so we can check which territory a dart lands in
-        territory_tree = BallTree(active_coords, metric='haversine')
-
-        # --- PRE-COMPUTE ALLOWED TERRITORIES ---
-        allowed_anchors = set()
-        if target_countries:
-            for anchor in active_nodes:
-                matching_rows = self.cities[self.cities['city_name'] == anchor]
-                if not matching_rows.empty:
-                    # IMPORTANT: Change 'country' to your actual CSV column name!
-                    if matching_rows.iloc[0]['country'] in target_countries:
-                        allowed_anchors.add(anchor)
-        else:
-            allowed_anchors = set(active_nodes)
-        # ---------------------------------------
-
-        lat_min, lat_max = 35.0, 70.0
-        lon_min, lon_max = -10.0, 30.0
-
-        # --- PHASE 1: SPAWN SYNTHETIC SWITCHES (m = 3) ---
-        switches_added = 0
-        while switches_added < total_switches:
-            test_lat = random.uniform(lat_min, lat_max)
-            test_lon = random.uniform(lon_min, lon_max)
-
-            if globe.is_land(test_lat, test_lon):
-                # --- THE COUNTRY FILTER ---
-                new_rad = np.array([[np.radians(test_lat), np.radians(test_lon)]])
-                _, indices = territory_tree.query(new_rad, k=1)
-                owner_anchor = active_nodes[indices[0][0]]
-
-                # If this coordinate is not in Spain/UK, throw it away and try again!
-                if owner_anchor not in allowed_anchors:
-                    continue
-                    # --------------------------
-
-                switch_id = f"BA_Europe_Switch_{switches_added}"
-                self.G.add_node(switch_id, pos=(test_lon, test_lat), type='Tier3_Synthetic', color='#98FB98')
-
-                dists_km = haversine_distances(new_rad, active_coords)[0] * 6371
-                n_closest = min(15, len(active_nodes))
-                closest_indices = np.argpartition(dists_km, n_closest - 1)[:n_closest]
-
-                weights = []
-                for idx in closest_indices:
-                    target_name = active_nodes[idx]
-                    k = self.G.degree(target_name)
-                    d = dists_km[idx]
-                    w = k / ((d + 1) ** 2)
-                    weights.append(w)
-
-                total_w = sum(weights)
-                probs = [w / total_w for w in weights]
-
-                m_edges = min(3, len(closest_indices))
-                chosen_indices = np.random.choice(closest_indices, size=m_edges, replace=False, p=probs)
-
-                for chosen_idx in chosen_indices:
-                    target_node = active_nodes[chosen_idx]
-                    final_dist = dists_km[chosen_idx]
-                    self.G.add_edge(switch_id, target_node, weight=final_dist, edge_type='T3_Synthetic_Link',
-                                    color='#98FB98')
-
-                active_nodes.append(switch_id)
-                active_coords = np.vstack([active_coords, new_rad])
-                switches_added += 1
-
-        # --- PHASE 2: SPAWN END USERS (m = 1) ---
-        users_added = 0
-        while users_added < total_users:
-            test_lat = random.uniform(lat_min, lat_max)
-            test_lon = random.uniform(lon_min, lon_max)
-
-            if globe.is_land(test_lat, test_lon):
-                # --- THE COUNTRY FILTER ---
-                new_rad = np.array([[np.radians(test_lat), np.radians(test_lon)]])
-                _, indices = territory_tree.query(new_rad, k=1)
-                owner_anchor = active_nodes[indices[0][0]]
-
-                if owner_anchor not in allowed_anchors:
-                    continue
-                    # --------------------------
-
-                user_id = f"BA_Europe_User_{users_added}"
-                self.G.add_node(user_id, pos=(test_lon, test_lat), type='Tier4_User', color='#0000FF')
-
-                dists_km = haversine_distances(new_rad, active_coords)[0] * 6371
-                n_closest = min(10, len(active_nodes))
-                closest_indices = np.argpartition(dists_km, n_closest - 1)[:n_closest]
-
-                weights = []
-                for idx in closest_indices:
-                    target_name = active_nodes[idx]
-                    k = self.G.degree(target_name)
-                    d = dists_km[idx]
-                    w = k / ((d + 1) ** 2)
-                    weights.append(w)
-
-                total_w = sum(weights)
-                probs = [w / total_w for w in weights]
-
-                chosen_idx = np.random.choice(closest_indices, p=probs)
-                target_node = active_nodes[chosen_idx]
-                final_dist = dists_km[chosen_idx]
-
-                self.G.add_edge(user_id, target_node, weight=final_dist, edge_type='T4_Access', color='#0000FF')
-
-                active_nodes.append(user_id)
-                active_coords = np.vstack([active_coords, new_rad])
-                users_added += 1
-
-        print(f"Tier 4 complete! Total Nodes: {self.G.number_of_nodes()}, Links: {self.G.number_of_edges()}")
-        return self.G
-
     def add_repeaters(self):
         pass
 
@@ -1589,191 +1440,10 @@ class QuantumNetworkBuilder_App3:
         print(f"Tier 2 Complete. Added {len(active_t2_nodes)} Regional Nodes.")
         return self.G
 
-    def generate_tier3(self, target_regions=['Catalonia'], max_gap_km=35, min_pop_geonames=5000):
-        print(f"Tier 3: Generating Regional Structural Backbone (MST + Mesh) in {target_regions}...")
-
-        regional_hubs = [n for n, attr in self.G.nodes(data=True) if attr.get('region') in target_regions and (
-                'Tier1' in attr.get('type', '') or 'Tier2' in attr.get('type', ''))]
-        active_t3_nodes = list(regional_hubs)
-
-        # Eurostat cities in the region — the base
-        eurostat_region_cities = self.cities[self.cities['region'].isin(target_regions)]
-
-        all_cities_coords_rad = np.array([
-            [np.radians(row['latitude']), np.radians(row['longitude'])]
-            for _, row in self.cities.iterrows()
-        ])
-        all_cities_regions = self.cities['region'].values
-        border_patrol_tree = BallTree(all_cities_coords_rad, metric='haversine')
-
-        # Build BallTree over Eurostat nodes already in the graph for gap detection
-        def get_active_coords():
-            return np.array([
-                [np.radians(self.G.nodes[n]['pos'][1]), np.radians(self.G.nodes[n]['pos'][0])]
-                for n in active_t3_nodes
-            ])
-
-        for target_region in target_regions:
-            region_cities = self.cities[self.cities['region'] == target_region]
-            if region_cities.empty:
-                print(f"  Warning: No cities found for region '{target_region}'")
-                continue
-
-            # Load GeoNames for the relevant country, filter to this region
-            # Assumes self.cities has a 'country' column — adjust country code as needed
-            country_codes = region_cities['country'].unique() if 'country' in region_cities.columns else ['ES']
-            geonames_parts = []
-            country_code_map = {'Spain': 'ES', 'United Kingdom': 'GB', 'France': 'FR'}
-            for cc_name in country_codes:
-                cc = country_code_map.get(cc_name, cc_name)  # accept raw ISO too
-                gdf = self.get_regional_data(country_code=cc)
-                gdf['country'] = cc_name
-                geonames_parts.append(gdf)
-
-            geonames_all = pd.concat(geonames_parts)
-            geonames_all = geonames_all.rename(columns={'name': 'city_name'})
-            geonames_all = geonames_all[geonames_all['population'] >= min_pop_geonames]
-            geonames_all = geonames_all.sort_values('population', ascending=False)
-
-            # Build BallTree over Eurostat cities in this region for gap detection
-            eurostat_coords_rad = np.array([
-                [np.radians(row['latitude']), np.radians(row['longitude'])]
-                for _, row in region_cities.iterrows()
-            ])
-            eurostat_tree = BallTree(eurostat_coords_rad, metric='haversine')
-
-            # Find GeoNames cities that are far from any Eurostat city
-            added_count = 0
-            used_geonames = set()
-
-            for _, row in geonames_all.iterrows():  # Already sorted by pop descending
-                city_name = row['city_name']
-                if city_name in self.G.nodes() or city_name in used_geonames:
-                    continue
-
-                pt = np.array([[np.radians(row['latitude']), np.radians(row['longitude'])]])
-
-                # Is it far from Eurostat coverage?
-                dist_rad, _ = eurostat_tree.query(pt, k=1)
-                dist_from_eurostat_km = dist_rad[0][0] * 6371
-                if dist_from_eurostat_km <= max_gap_km:
-                    continue  # Eurostat already covers this area
-
-                # Is it far from nodes already added in this pass? (avoid clustering)
-                active_coords = get_active_coords()
-                dists_to_active = haversine_distances(pt, active_coords)[0] * 6371
-                if np.min(dists_to_active) <= max_gap_km:
-                    continue  # Already covered by a node we just added
-
-                # Border patrol: confirm it's inside the target region
-                _, nearest_idx = border_patrol_tree.query(pt, k=1)
-                if all_cities_regions[nearest_idx[0][0]] != target_region:
-                    continue
-
-                self.G.add_node(city_name, pos=(row['longitude'], row['latitude']),
-                                type='Tier3_Real', region=target_region,
-                                pop=row['population'], color='#00FF00')
-                active_t3_nodes.append(city_name)
-                used_geonames.add(city_name)
-                added_count += 1
-
-            print(f"  [{target_region}] Added {added_count} GeoNames gap-fill cities.")
-
-        # MST + KNN wiring — unchanged
-        node_names = active_t3_nodes
-        final_coords_rad = np.array(
-            [[np.radians(self.G.nodes[n]['pos'][1]), np.radians(self.G.nodes[n]['pos'][0])] for n in node_names])
-        dist_matrix = haversine_distances(final_coords_rad, final_coords_rad) * 6371
-
-        G_temp = nx.Graph()
-        for i in range(len(node_names)):
-            for j in range(i + 1, len(node_names)):
-                G_temp.add_edge(node_names[i], node_names[j], weight=dist_matrix[i, j])
-
-        mst = nx.minimum_spanning_tree(G_temp, weight='weight')
-        for u, v, data in mst.edges(data=True):
-            if not self.G.has_edge(u, v):
-                self.G.add_edge(u, v, weight=data['weight'], edge_type='T3_MST', color='#00FF00')
-
-        for i in range(len(node_names)):
-            nearest_indices = np.argsort(dist_matrix[i])[1:3]
-            for j in nearest_indices:
-                u, v = node_names[i], node_names[j]
-                if not self.G.has_edge(u, v):
-                    self.G.add_edge(u, v, weight=dist_matrix[i, j], edge_type='T3_KNN', color='#00FF00')
-
-        print(f"Tier 3 Complete. Regional Backbone established with {len(active_t3_nodes)} total nodes.")
-        return self.G
-
-    def generate_single_city_network(self, target_city='Barcelona', num_users=300, m1=2, m2=1, p=0.15):
-        print(f"Generating Pure Abstract Dual BA Network for {target_city}...")
-
-        city_data = self.cities[self.cities['city_name'] == target_city]
-        if city_data.empty:
-            print(f"Error: {target_city} not found in dataset!")
-            return self.G
-
-        base_lon = city_data.iloc[0]['longitude']
-        base_lat = city_data.iloc[0]['latitude']
-
-        if target_city not in self.G:
-            self.G.add_node(target_city, pos=(base_lon, base_lat), type='Tier1_Hub', color='#FF0000')
-
-        new_nodes = []
-        active_nodes = [target_city]
-
-        # 1. THE TOPOLOGY ENGINE: Dual Barabási-Albert Growth
-        for i in range(num_users):
-            new_node = f"{target_city}_User_{i}"
-            self.G.add_node(new_node, type='Tier4_User', color='#1E90FF')
-            new_nodes.append(new_node)
-
-            m = m1 if random.random() < p else m2
-
-            degrees = np.array([self.G.degree(t) for t in active_nodes])
-            if degrees.sum() > 0:
-                probs = degrees / degrees.sum()
-            else:
-                probs = np.ones(len(active_nodes)) / len(active_nodes)
-
-            m_actual = min(m, len(active_nodes))
-            chosen = np.random.choice(active_nodes, size=m_actual, replace=False, p=probs)
-
-            for c in chosen:
-                self.G.add_edge(new_node, c, edge_type='City_Access', color='#1E90FF')
-
-            active_nodes.append(new_node)
-
-        # 2. THE PURE PHYSICS ENGINE
-        print(f"Running abstract physics layout...")
-        subgraph_nodes = [target_city] + new_nodes
-        H = self.G.subgraph(subgraph_nodes)
-
-        # We don't fix any nodes. We don't provide initial positions.
-        # We just let NetworkX draw the perfect graph.
-        # scale=0.03 keeps the resulting graph roughly 3-5km wide in GPS terms.
-        abstract_positions = nx.spring_layout(H, scale=0.03, iterations=50)
-
-        # 3. GEOGRAPHIC TRANSLATION (The "Stamp")
-        # Find where the physics engine accidentally placed the central hub
-        hub_abstract_lon, hub_abstract_lat = abstract_positions[target_city]
-
-        # Calculate exactly how far we need to shift the graph to put the hub on Barcelona
-        shift_lon = base_lon - hub_abstract_lon
-        shift_lat = base_lat - hub_abstract_lat
-
-        # Apply that exact shift to every single node in the complex network
-        for n in subgraph_nodes:
-            abs_lon, abs_lat = abstract_positions[n]
-            self.G.nodes[n]['pos'] = (abs_lon + shift_lon, abs_lat + shift_lat)
-
-        print(f"City Network Complete! Translated perfectly to {target_city}.")
-        return self.G
-
     def generate_tier4_fractal(self, target_regions=['Catalonia'], m1=2, m2=1, p=0.15, pop_scale=1000):
         print(f"Executing Integrated Tier 4 Fractal Access Layer for {target_regions}...")
 
-        # 1. Identify Anchors (T1 & T2 hubs)
+        # 1. Identify Anchors (T1, T2 & T3 hubs)
         hubs = [n for n, attr in self.G.nodes(data=True) if attr.get('region') in target_regions and (
                 'Tier1' in attr.get('type', '') or
                 'Tier2' in attr.get('type', '') or
@@ -1786,6 +1456,78 @@ class QuantumNetworkBuilder_App3:
         hub_coords_dict = {n: np.array([[np.radians(self.G.nodes[n]['pos'][1]), np.radians(self.G.nodes[n]['pos'][0])]])
                            for n in hubs}
 
+        # --- COMPLETELY DYNAMIC BORDER PATROL SETUP ---
+        print(f"Mobilizing dynamic international border patrol for {target_regions[0]}...")
+
+        # 1. Dynamically calculate the bounding box based on the known region
+        known_region_cities = self.cities[self.cities['region'] == target_regions[0]]
+        if known_region_cities.empty:
+            print(f"Error: No known cities in {target_regions[0]} to establish borders.")
+            return self.G
+
+        min_lat, max_lat = known_region_cities['latitude'].min(), known_region_cities['latitude'].max()
+        min_lon, max_lon = known_region_cities['longitude'].min(), known_region_cities['longitude'].max()
+
+        # Add a 1.0 degree buffer (~111km) to catch international border spillovers
+        patrol_bounds = (min_lat - 1.0, max_lat + 1.0, min_lon - 1.0, max_lon + 1.0)
+
+        # 2. Detect which countries overlap this buffer zone using your base CSV
+        buffer_cities = self.cities[
+            (self.cities['latitude'] >= patrol_bounds[0]) & (self.cities['latitude'] <= patrol_bounds[1]) &
+            (self.cities['longitude'] >= patrol_bounds[2]) & (self.cities['longitude'] <= patrol_bounds[3])
+            ]
+
+        # Standard Eurostat to GeoNames ISO mapping
+        iso_map = {
+            'Spain': 'ES', 'France': 'FR', 'Andorra': 'AD', 'Portugal': 'PT',
+            'Germany': 'DE', 'Italy': 'IT', 'United Kingdom': 'GB', 'Belgium': 'BE',
+            'Netherlands': 'NL', 'Switzerland': 'CH', 'Austria': 'AT', 'Poland': 'PL'
+        }
+
+        # Extract unique country codes found in the buffer
+        target_isos = []
+        if 'country' in buffer_cities.columns:
+            neighboring_countries = buffer_cities['country'].unique()
+            target_isos = [iso_map.get(c) for c in neighboring_countries if c in iso_map]
+
+        # Ensure the home country is always in the list
+        home_country = known_region_cities.iloc[0]['country'] if 'country' in known_region_cities.columns else 'Spain'
+        home_iso = iso_map.get(home_country, 'ES')
+        if home_iso not in target_isos:
+            target_isos.append(home_iso)
+
+        # Edge-case: Eurostat often skips microstates. If we detect a Spain/France border, manually inject Andorra.
+        if 'ES' in target_isos and 'FR' in target_isos and 'AD' not in target_isos:
+            target_isos.append('AD')
+
+        # 3. Load Customs Agents for all detected surrounding countries
+        patrol_dfs = []
+        for iso in set(target_isos):
+            try:
+                df_country = self.get_regional_data(country_code=iso, region_bounds=patrol_bounds)
+                patrol_dfs.append(df_country)
+            except Exception as e:
+                pass  # Gracefully skip if a country download fails
+
+        full_patrol_df = pd.concat(patrol_dfs).reset_index(drop=True)
+
+        # 4. Find the target region's true admin code (using ONLY the home country to avoid border-town mistakes)
+        anchor_lat = known_region_cities.iloc[0]['latitude']
+        anchor_lon = known_region_cities.iloc[0]['longitude']
+
+        home_df = full_patrol_df[full_patrol_df['country_code'] == home_iso].reset_index(drop=True)
+        distances = (home_df['latitude'] - anchor_lat) ** 2 + (home_df['longitude'] - anchor_lon) ** 2
+        target_admin_code = home_df.loc[distances.idxmin(), 'admin1_code']
+
+        # 5. Build the International Border Tree
+        country_coords = np.array(
+            [[np.radians(row['latitude']), np.radians(row['longitude'])] for _, row in full_patrol_df.iterrows()])
+        country_admin_codes = full_patrol_df['admin1_code'].values
+        country_iso_codes = full_patrol_df['country_code'].values
+
+        border_tree = BallTree(country_coords, metric='haversine')
+        # ----------------------------------------------
+
         all_new_t4_nodes = []
         users_added = 0
 
@@ -1795,13 +1537,11 @@ class QuantumNetworkBuilder_App3:
             pop = self.G.nodes[hub].get('pop', 50000)
             num_users = min(400, max(20, int(pop / pop_scale)))
 
-            # Dynamic Radius based on Max Hub-to-Hub distance
             dists = [haversine_distances(hub_coords_dict[hub], coords)[0][0] * 6371 for other_hub, coords in
                      hub_coords_dict.items() if hub != other_hub]
-            safe_radius_km = np.max(dists) if dists else 25.0
+            safe_radius_km = np.max(dists) #if dists else 25.0
             dynamic_scale_deg = max(0.05, (num_users / 400.0) * (safe_radius_km / 111.0))
 
-            # Abstract Topology
             H = nx.Graph()
             H.add_node(hub)
             active_nodes = [hub]
@@ -1822,7 +1562,6 @@ class QuantumNetworkBuilder_App3:
                     H.add_edge(user_id, c, edge_type='T4_Access')
                 active_nodes.append(user_id)
 
-            # Physics & Rotation
             abstract_pos = nx.spring_layout(H, scale=dynamic_scale_deg, iterations=40)
             hub_abs_lon, hub_abs_lat = abstract_pos[hub]
 
@@ -1830,7 +1569,7 @@ class QuantumNetworkBuilder_App3:
                 px = abstract_pos[n][0] + (hub_lon - hub_abs_lon)
                 py = abstract_pos[n][1] + (hub_lat - hub_abs_lat)
 
-                # Ocean Rotation: 15-degree increments until land
+                # 1. Ocean Rotation: Keep it on land
                 angle = 0
                 while not globe.is_land(py, px) and angle < 360:
                     angle += 15
@@ -1838,6 +1577,24 @@ class QuantumNetworkBuilder_App3:
                     rel_x, rel_y = px - hub_lon, py - hub_lat
                     px = hub_lon + (np.cos(theta) * rel_x) - (np.sin(theta) * rel_y)
                     py = hub_lat + (np.sin(theta) * rel_x) + (np.cos(theta) * rel_y)
+
+                # 2. STRICT ADMIN BORDER PATROL: Keep it inside the target region
+                attempts = 0
+                while attempts < 20:
+                    pt = np.array([[np.radians(py), np.radians(px)]])
+                    _, idx = border_tree.query(pt, k=1)
+
+                    nearest_admin = country_admin_codes[idx[0][0]]
+                    nearest_country = country_iso_codes[idx[0][0]]
+
+                    # DYNAMIC CHECK: Matches target region AND target country
+                    if nearest_admin == target_admin_code and nearest_country == home_iso:
+                        break  # Safe!
+
+                    # It spilled over a border! Pull it 15% closer to the hub and check again
+                    px = hub_lon + (px - hub_lon) * 0.85
+                    py = hub_lat + (py - hub_lat) * 0.85
+                    attempts += 1
 
                 self.G.add_node(n, pos=(px, py), type='Tier4_User', region=target_regions[0])
                 for edge in H.edges(n):
@@ -1864,7 +1621,149 @@ class QuantumNetworkBuilder_App3:
                 probs = (degrees + 1) / (degrees + 1).sum()
                 self.G.add_edge(n, np.random.choice(valid_targets, p=probs), edge_type='T4_Fuzzy_Link')
 
-        print(f"Tier 4 Complete. Added {users_added} users.")
+        print(f"Tier 4 Complete. Added {users_added} users securely inside borders.")
+        return self.G
+
+    def generate_tier4_unified(self, target_regions=['Catalonia'], m1=2, m2=1, p=0.15, pop_scale=1000):
+        print(f"Executing Unified Tier 4 Macro-Fractal for {target_regions}...")
+
+        # 1. Identify Regional Backbone Anchors
+        hubs = [n for n, attr in self.G.nodes(data=True) if attr.get('region') in target_regions and (
+                'Tier1' in attr.get('type', '') or
+                'Tier2' in attr.get('type', '') or
+                'Tier3' in attr.get('type', ''))]
+
+        if not hubs:
+            print("No backbone anchors found.")
+            return self.G
+
+        # --- COMPLETELY DYNAMIC BORDER PATROL SETUP ---
+        print(f"Mobilizing dynamic international border patrol for {target_regions[0]}...")
+
+        known_region_cities = self.cities[self.cities['region'] == target_regions[0]]
+        min_lat, max_lat = known_region_cities['latitude'].min(), known_region_cities['latitude'].max()
+        min_lon, max_lon = known_region_cities['longitude'].min(), known_region_cities['longitude'].max()
+        patrol_bounds = (min_lat - 1.0, max_lat + 1.0, min_lon - 1.0, max_lon + 1.0)
+
+        buffer_cities = self.cities[
+            (self.cities['latitude'] >= patrol_bounds[0]) & (self.cities['latitude'] <= patrol_bounds[1]) &
+            (self.cities['longitude'] >= patrol_bounds[2]) & (self.cities['longitude'] <= patrol_bounds[3])
+            ]
+
+        iso_map = {'Spain': 'ES', 'France': 'FR', 'Andorra': 'AD', 'Portugal': 'PT', 'Germany': 'DE', 'Italy': 'IT'}
+        target_isos = [iso_map.get(c) for c in buffer_cities['country'].unique() if
+                       c in iso_map] if 'country' in buffer_cities.columns else []
+
+        home_country = known_region_cities.iloc[0]['country'] if 'country' in known_region_cities.columns else 'Spain'
+        home_iso = iso_map.get(home_country, 'ES')
+        if home_iso not in target_isos: target_isos.append(home_iso)
+        if 'ES' in target_isos and 'FR' in target_isos and 'AD' not in target_isos: target_isos.append('AD')
+
+        patrol_dfs = []
+        for iso in set(target_isos):
+            try:
+                patrol_dfs.append(self.get_regional_data(country_code=iso, region_bounds=patrol_bounds))
+            except:
+                pass
+
+        full_patrol_df = pd.concat(patrol_dfs).reset_index(drop=True)
+
+        anchor_lat, anchor_lon = known_region_cities.iloc[0]['latitude'], known_region_cities.iloc[0]['longitude']
+        home_df = full_patrol_df[full_patrol_df['country_code'] == home_iso].reset_index(drop=True)
+        distances = (home_df['latitude'] - anchor_lat) ** 2 + (home_df['longitude'] - anchor_lon) ** 2
+        target_admin_code = home_df.loc[distances.idxmin(), 'admin1_code']
+
+        country_coords = np.array(
+            [[np.radians(row['latitude']), np.radians(row['longitude'])] for _, row in full_patrol_df.iterrows()])
+        country_admin_codes, country_iso_codes = full_patrol_df['admin1_code'].values, full_patrol_df[
+            'country_code'].values
+        border_tree = BallTree(country_coords, metric='haversine')
+        # ----------------------------------------------
+
+        # 2. Setup the Unified Physics Environment
+        total_pop = sum(self.G.nodes[h].get('pop', 10000) for h in hubs)
+        num_users = min(2500,
+                        max(100, int(total_pop / pop_scale)))  # Cap at 2500 so the physics engine doesn't melt your PC
+        print(f"Spawning {num_users} users across the unified backbone...")
+
+        H = nx.Graph()
+        initial_pos = {}
+        for h in hubs:
+            H.add_node(h)
+            initial_pos[h] = self.G.nodes[h]['pos']
+
+        # Inject existing backbone edges into the physics engine so it feels the tension between cities
+        for u, v in self.G.edges(hubs):
+            if u in hubs and v in hubs:
+                H.add_edge(u, v)
+
+        active_nodes = list(hubs)
+        new_nodes = []
+
+        # 3. MACRO-SCALE DUAL BARABÁSI-ALBERT
+        for i in range(num_users):
+            user_id = f"T4_MacroUser_{i}"
+            H.add_node(user_id)
+            new_nodes.append(user_id)
+
+            m = m1 if random.random() < p else m2
+            degrees = np.array([H.degree(t) for t in active_nodes])
+            probs = degrees / degrees.sum() if degrees.sum() > 0 else np.ones(len(active_nodes)) / len(active_nodes)
+
+            chosen = np.random.choice(active_nodes, size=min(m, len(active_nodes)), replace=False, p=probs)
+            for c in chosen:
+                H.add_edge(user_id, c, edge_type='T4_Access')
+
+            active_nodes.append(user_id)
+
+            # Give it a starting point near its primary connection so the physics engine doesn't explode
+            root_pos = initial_pos[chosen[0]]
+            initial_pos[user_id] = (root_pos[0] + random.uniform(-0.05, 0.05),
+                                    root_pos[1] + random.uniform(-0.05, 0.05))
+
+        # 4. UNIFIED PHYSICS ENGINE
+        print("Running macro-physics simulation. (This may take 5-10 seconds to settle thousands of nodes...)")
+        # 'k' dictates ideal spacing. The hubs are completely fixed in place.
+        final_pos = nx.spring_layout(H, pos=initial_pos, fixed=hubs, k=0.018, iterations=40)
+
+        # 5. GEOGRAPHY & CUSTOMS APPLICATION
+        print("Applying geography and border constraints...")
+        for n in new_nodes:
+            px, py = final_pos[n]
+
+            # Find its closest anchor for the pull-back string
+            closest_hub = list(H.neighbors(n))[0]
+            hub_lon, hub_lat = initial_pos[closest_hub]
+
+            # Ocean Check
+            angle = 0
+            while not globe.is_land(py, px) and angle < 360:
+                angle += 15
+                theta = np.radians(angle)
+                rel_x, rel_y = px - hub_lon, py - hub_lat
+                px = hub_lon + (np.cos(theta) * rel_x) - (np.sin(theta) * rel_y)
+                py = hub_lat + (np.sin(theta) * rel_x) + (np.cos(theta) * rel_y)
+
+            # Strict Border Patrol
+            attempts = 0
+            while attempts < 20:
+                pt = np.array([[np.radians(py), np.radians(px)]])
+                _, idx = border_tree.query(pt, k=1)
+
+                if country_admin_codes[idx[0][0]] == target_admin_code and country_iso_codes[idx[0][0]] == home_iso:
+                    break
+
+                    # Pull back towards its anchor
+                px = hub_lon + (px - hub_lon) * 0.85
+                py = hub_lat + (py - hub_lat) * 0.85
+                attempts += 1
+
+            self.G.add_node(n, pos=(px, py), type='Tier4_User', region=target_regions[0])
+            for neighbor in H.neighbors(n):
+                if not self.G.has_edge(n, neighbor):
+                    self.G.add_edge(n, neighbor, edge_type='T4_Access')
+
+        print(f"Unified Tier 4 Complete. Wove {num_users} users into the regional continuum.")
         return self.G
 
     def plot_network(self):
@@ -2037,73 +1936,6 @@ class QuantumNetworkBuilder_App3:
         m.save("quantum_network_topological.html")
         print("Saved as quantum_network_topological.html")
 
-    def generate_tier3_backbone(self, target_regions=['Catalonia'], target_node_density=25):
-        print(f"Tier 3: Force-Filling {target_regions} with Regional Distribution Nodes...")
-
-        # 1. Identify existing backbone hubs
-        regional_hubs = [n for n, attr in self.G.nodes(data=True) if attr.get('region') in target_regions and (
-                    'Tier1' in attr.get('type', '') or 'Tier2' in attr.get('type', ''))]
-        active_t3_nodes = list(regional_hubs)
-
-        # 2. Get the bounding box for the entire target region
-        region_cities = self.cities[self.cities['region'].isin(target_regions)]
-        min_lat, max_lat = region_cities['latitude'].min(), region_cities['latitude'].max()
-        min_lon, max_lon = region_cities['longitude'].min(), region_cities['longitude'].max()
-
-        # 3. Create a high-resolution grid (The "Force-Fill" Scanner)
-        # Increase the resolution (e.g., 40x40) to ensure no blank spaces
-        lat_steps = np.linspace(min_lat, max_lat, 40)
-        lon_steps = np.linspace(min_lon, max_lon, 40)
-
-        syn_count = 0
-        for lat in lat_steps:
-            for lon in lon_steps:
-                # Basic viability checks
-                if not globe.is_land(lat, lon): continue
-
-                # Proximity check: Is this spot ALREADY covered by an existing hub?
-                test_rad = np.array([[np.radians(lat), np.radians(lon)]])
-                active_coords = np.array(
-                    [[np.radians(self.G.nodes[n]['pos'][1]), np.radians(self.G.nodes[n]['pos'][0])] for n in
-                     active_t3_nodes])
-                dists = haversine_distances(test_rad, active_coords)[0] * 6371
-
-                # If it's a blank space (e.g., > 35km from any existing hub), force-add a node
-                if np.min(dists) > 35.0:
-                    syn_name = f"T3_SynHub_{target_regions[0]}_{syn_count}"
-                    self.G.add_node(syn_name, pos=(lon, lat), type='Tier3_Synthetic', region=target_regions[0],
-                                    color='#00FF00')
-                    active_t3_nodes.append(syn_name)
-                    syn_count += 1
-
-        print(f"Force-filled {syn_count} nodes to ensure regional coverage.")
-
-        # 4. MESH WIRING (Same as before)
-        node_names = active_t3_nodes
-        coords_rad = np.array(
-            [[np.radians(self.G.nodes[n]['pos'][1]), np.radians(self.G.nodes[n]['pos'][0])] for n in node_names])
-        dist_matrix = haversine_distances(coords_rad, coords_rad) * 6371
-
-        # Use MST for base connectivity, KNN for regional redundancy
-        G_temp = nx.Graph()
-        for i in range(len(node_names)):
-            for j in range(i + 1, len(node_names)):
-                G_temp.add_edge(node_names[i], node_names[j], weight=dist_matrix[i, j])
-
-        mst = nx.minimum_spanning_tree(G_temp, weight='weight')
-        for u, v, data in mst.edges(data=True):
-            self.G.add_edge(u, v, weight=data['weight'], edge_type='T3_MST', color='#00FF00')
-
-        # Add lateral links for 'Complex Network' feel
-        for i in range(len(node_names)):
-            nearest_indices = np.argsort(dist_matrix[i])[1:3]
-            for j in nearest_indices:
-                if not self.G.has_edge(node_names[i], node_names[j]):
-                    self.G.add_edge(node_names[i], node_names[j], weight=dist_matrix[i, j], edge_type='T3_KNN',
-                                    color='#00FF00')
-
-        return self.G
-
     def get_regional_data(self, country_code='ES', region_bounds=None):
         """
         Fetches fresh data if needed and filters it for the specific region.
@@ -2148,21 +1980,128 @@ class QuantumNetworkBuilder_App3:
 
         return df
 
+    def generate_tier3_regional(self, target_regions=['Catalonia'], gap_km=35, min_pop=1500):
+        print(f"Tier 3: Generating Organic Regional Backhaul in {target_regions}...")
+
+        hubs = [n for n, attr in self.G.nodes(data=True) if attr.get('region') in target_regions and (
+                'Tier1' in attr.get('type', '') or 'Tier2' in attr.get('type', ''))]
+        active_t3_nodes = []
+        active_t3_coords = []
+
+        all_active_nodes = list(self.G.nodes())
+        all_active_coords = np.array(
+            [[np.radians(self.G.nodes[n]['pos'][1]), np.radians(self.G.nodes[n]['pos'][0])] for n in all_active_nodes])
+        hub_coords_rad = np.array(
+            [[np.radians(self.G.nodes[n]['pos'][1]), np.radians(self.G.nodes[n]['pos'][0])] for n in hubs])
+
+        # --- COMPLETELY DYNAMIC COUNTRY DETECTION ---
+        # 1. Find the known cities in your CSV for the target region
+        known_region_cities = self.cities[self.cities['region'] == target_regions[0]]
+        if known_region_cities.empty:
+            print(f"Error: No known cities in {target_regions[0]} to anchor the search.")
+            return self.G
+
+        # 2. Map the detected country to its ISO code
+        iso_map = {
+            'Spain': 'ES', 'France': 'FR', 'Andorra': 'AD', 'Portugal': 'PT',
+            'Germany': 'DE', 'Italy': 'IT', 'United Kingdom': 'GB', 'Belgium': 'BE',
+            'Netherlands': 'NL', 'Switzerland': 'CH', 'Austria': 'AT', 'Poland': 'PL',
+            'Sweden': 'SE', 'Norway': 'NO', 'Denmark': 'DK', 'Finland': 'FI', 'Ireland': 'IE'
+        }
+
+        home_country = known_region_cities.iloc[0]['country'] if 'country' in known_region_cities.columns else 'Spain'
+        home_iso = iso_map.get(home_country, 'ES')  # Default to ES if not found
+
+        print(f"Detected home country: {home_country} ({home_iso})")
+
+        # 3. Get the entire country dataset dynamically
+        full_country_df = self.get_regional_data(country_code=home_iso)
+
+        # 4. Find the admin1_code using a SPATIAL ANCHOR (Immune to name mismatches!)
+        anchor_lat = known_region_cities.iloc[0]['latitude']
+        anchor_lon = known_region_cities.iloc[0]['longitude']
+
+        # Find the geometrically closest point in the GeoNames database
+        distances = (full_country_df['latitude'] - anchor_lat) ** 2 + (full_country_df['longitude'] - anchor_lon) ** 2
+        closest_geoname_idx = distances.idxmin()
+
+        # 5. Extract the official region code from that physical location
+        region_code = full_country_df.loc[closest_geoname_idx, 'admin1_code']
+        geoname_anchor_name = full_country_df.loc[closest_geoname_idx, 'name']
+
+        print(f"Anchored '{target_regions[0]}' via {geoname_anchor_name} -> admin1_code: {region_code}")
+
+        # 6. Filter the millions of points down to ONLY this exact region
+        geo_df = full_country_df[full_country_df['admin1_code'] == region_code]
+        geo_df = geo_df[geo_df['population'] >= min_pop].sort_values(by='population', ascending=False)
+
+        added_count = 0
+        for _, row in geo_df.iterrows():
+            lat, lon, pop, name = row['latitude'], row['longitude'], row['population'], row['name']
+
+            if name in self.G.nodes():
+                continue
+
+            pt = np.array([[np.radians(lat), np.radians(lon)]])
+            dists_to_all = haversine_distances(pt, all_active_coords)[0] * 6371
+
+            if np.min(dists_to_all) > gap_km:
+                self.G.add_node(name, pos=(lon, lat), type='Tier3_Real', region=target_regions[0], pop=pop,
+                                color='#00FF00')
+                added_count += 1
+
+                # WIRING A: Uplink to closest T1/T2 Hub
+                if len(hubs) > 0:
+                    dists_to_hubs = haversine_distances(pt, hub_coords_rad)[0] * 6371
+                    closest_hub = hubs[np.argmin(dists_to_hubs)]
+                    self.G.add_edge(name, closest_hub, weight=np.min(dists_to_hubs), edge_type='T3_Uplink',
+                                    color='#00FF00')
+
+                # WIRING B: True Starburst Preferential Attachment (The Tier 2 Math)
+                if len(active_t3_nodes) > 0:
+                    t3_coords_arr = np.vstack(active_t3_coords)
+                    dists_to_t3 = haversine_distances(pt, t3_coords_arr)[0] * 6371
+                    valid_indices = np.where(dists_to_t3 < 120.0)[0]  # Wider search radius to find hubs
+
+                    if len(valid_indices) > 0:
+                        weights = [(self.G.degree(active_t3_nodes[v]) + 1) / (dists_to_t3[v] + 1) for v in
+                                   valid_indices]
+                        probs = [w / sum(weights) for w in weights]
+
+                        # size=1 ensures it acts like a tree branch, not a fishing net
+                        chosen = np.random.choice(valid_indices, size=1, p=probs)
+
+                        for c_idx in chosen:
+                            self.G.add_edge(name, active_t3_nodes[c_idx], weight=dists_to_t3[c_idx],
+                                            edge_type='T3_Mesh', color='#00FF00')
+
+                active_t3_nodes.append(name)
+                active_t3_coords = pt if len(active_t3_coords) == 0 else np.vstack([active_t3_coords, pt])
+                all_active_nodes.append(name)
+                all_active_coords = np.vstack([all_active_coords, pt])
+
+        print(f"Tier 3 Complete. Added {added_count} real organic distribution nodes.")
+        return self.G
 # 1. Load your newly generated CSV
 df = pd.read_csv('ultimate_city_coordinates.csv')
 
-# 1. Initialize a completely fresh network (don't run Tier 1, 2, or 3)
+# Initialize the builder
 net3 = QuantumNetworkBuilder_App3(df)
 
 # 1. Continental Core
 net3.generate_tier1()
 
-# 2. National Skeleton
-net3.generate_tier2(target_countries=['Spain'])
+# 2. National Skeleton (Spain and Germany)
+net3.generate_tier2(target_countries=['Spain'], gap_km=80)
+#
+# 3 & 4. Regional and Fractal Networks (Run them ONE BY ONE)
+regions_to_map = ['Catalonia']
 
-# 3. Skip Tier 3!
-net3.generate_tier3(target_regions=['Catalonia'])
-# 4. Independent Fractal Spawning (Tiers 1 & 2 ONLY in Catalonia)
-net3.generate_tier4_fractal(target_regions=['Catalonia'], pop_scale=1000)
+for region in regions_to_map:
+    print(f"\n--- INITIATING BUILD FOR: {region.upper()} ---")
+    net3.generate_tier3_regional(target_regions=[region])
+    net3.generate_tier4_fractal(target_regions=[region], pop_scale=500)
+
 # 5. Plot with the Dynamic Edge Colors
 net3.plot_network_top()
+
