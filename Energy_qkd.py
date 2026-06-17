@@ -5,7 +5,7 @@ import random
 
 # Import the custom functions from your environment
 from network_funcs import *
-from qopt_funcs import *
+from NEW_qopt_funcs import *
 
 def optimal_path_algo(G, target, algo='serial'):
     if algo == 'serial':
@@ -154,6 +154,45 @@ def avg_SKR_sample(G_pruned):
     # print(f"Average Secret Key Rate for the network: {average_skr:.4f} bits/sec")
     return average_skr
 
+
+def avg_SKR_qkd_mimic(G_pruned, routing_mode='parallel'):
+    comp_list = sorted(nx.connected_components(G_pruned), key=len, reverse=True)
+    G_giant = G_pruned.subgraph(comp_list[0])
+    giant_nodes = list(G_giant.nodes())
+
+    # In qkd_networks.py, n_nodes_for_dijkstra = 20
+    n_nodes_to_test = 20
+    node_max = min(len(giant_nodes), n_nodes_to_test)
+
+    network_rates = []
+    connected_pairs = 0
+    total_pairs = 0
+
+    # Route the quantum signals exactly as done in qkd_networks.py
+    for i in range(node_max):
+        target = giant_nodes[i]
+
+        # Use your pathing algorithm
+        weights, paths = optimal_path_algo(G_pruned, target, algo=routing_mode)
+
+        # qkd_networks loops through range(target), checking nodes 0 to (target - 1)
+        for source in range(target):
+            total_pairs += 1
+
+            # Check if source is actually connected to the target
+            if source in weights and weights[source] < float('inf'):
+                actual_rate = weights[source] ** -1
+                network_rates.append(actual_rate)
+                connected_pairs += 1
+            else:
+                # Disconnected nodes get a rate of 0
+                network_rates.append(0)
+
+    average_skr = np.average(network_rates) if network_rates else 0
+    reachability = connected_pairs / total_pairs if total_pairs > 0 else 0
+
+    return average_skr, reachability
+
 def avg_SKR_giant(G_pruned, routing_mode='serial'):
     comp_list = sorted(nx.connected_components(G_pruned), key=len, reverse=True)
     G_giant = G_pruned.subgraph(comp_list[0])
@@ -265,6 +304,7 @@ def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='parall
                                 edge_DV[i, j] = edge_DV[j, i] = True
                             else:
                                 edge_CV[i, j] = edge_CV[j, i] = True
+                        # Prunning done using W so no need for A
         elif type == 'CV':
             edge_CV = np.zeros_like(A, dtype=bool)
             edge_DV = np.zeros_like(A, dtype=bool)
@@ -302,7 +342,9 @@ def network_energy_efficiency(num_runs=5, N=100, radius=45, routing_mode='parall
         # Calculate the deterministic power for this specific layout
         _, total_power = power_cost(G_pruned, edge_CV, edge_DV, include_true_dsp_cost=include_true_dsp_cost)
 
-        avg_skr, reachability = avg_SKR(G_pruned, routing_mode=routing_mode)
+        #avg_skr, reachability = avg_SKR(G_pruned, routing_mode=routing_mode)
+        #avg_skr = avg_SKR_sample(G_pruned)
+        avg_skr, reachability = avg_SKR_qkd_mimic(G_pruned, routing_mode=routing_mode)
         ee = avg_skr / total_power if total_power > 0 else 0
 
         run_powers.append(total_power)

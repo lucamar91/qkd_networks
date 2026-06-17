@@ -14,7 +14,7 @@ import shutil    # to copy files at the end of the script
 # Computed quantities: connectivity, susceptibility, average key rate, average geodetic and topological distances, degree distribution, clustering coeff.
 # The version of the QKD protocol used (CV/DV/hybrid) can be changed through the variable 'd_hybrid' below.
 
-Ns = [100]                    # list of network sizes
+Ns = [1000]                    # list of network sizes
 
 rate_min = 0
 n_nodes_for_dijkstra = 20
@@ -52,7 +52,7 @@ if rho_span == '_focus':        # for Fig. 1b
     n_iter, n_couples = 40, 10
     rhos = 0.14*10**np.linspace(-2.3,-1.9,20)
 elif rho_span == '_wide':
-    n_iter, n_couples = 10, 10
+    n_iter, n_couples = 1, 10
     rhos = 0.14*10**np.linspace(-4.,1.,50)
 else:
     print('ERROR: variable \'rho_span\' must be \'_focus\' or \'_wide\'.')
@@ -74,7 +74,7 @@ func_DV = lambda dist : hybrid_keyrate_bitpersec(state_of_the_art_params, dist, 
 d_c_DV = bisection_solver(func_DV, 10E-06, d_max)
 diff = lambda d: func_CV(d) - func_DV(d)
 d_cross = bisection_solver(diff, 10E-06, d_max)
-
+print(d_c_CV)
 # The 'd_hybrid' variable can be changed to any value. Of particular interest are:
 # float('inf') to force CV-only networks, 0 to force DV-only nws, d_cross for 'optimal' hybrid protocol
 d_hybrid = d_cross        
@@ -82,7 +82,7 @@ d_hybrid = d_cross
 if not edges_may_fail:
     PoF = 0.
 
-qkd = 'hybrid'            # forcing the qkd parameter to 'hybrid'
+qkd = 'CV'            # forcing the qkd parameter to 'hybrid'
 print('Coordinates are sampled ' + ('from a pool inferred from a real network through dMercator.' if sample_from_file else 'randomly.'))
 print('Rates are ' + ('' if compute_nw_rates else 'not ') + 'computed.')
 if edges_may_fail:
