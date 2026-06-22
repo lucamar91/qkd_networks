@@ -5,7 +5,7 @@ import random
 
 # Import the custom functions from your environment
 from network_funcs import *
-from NEW_qopt_funcs import *
+from OLD_qopt_funcs import *
 
 def optimal_path_algo(G, target, algo='serial'):
     if algo == 'serial':
@@ -32,6 +32,8 @@ func_DV = lambda dist: hybrid_keyrate_bitpersec(state_of_the_art_params, dist, d
 d_max = 1000
 d_c_CV = bisection_solver(func_CV, 10E-06, d_max)
 d_c_DV = bisection_solver(func_DV, 10E-06, d_max)
+print(d_c_CV)
+print(d_c_DV)
 
 # Find where CV and DV rates intersect (crossover)
 diff = lambda d: func_CV(d) - func_DV(d)
