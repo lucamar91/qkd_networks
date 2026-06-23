@@ -21,7 +21,7 @@ from budget_config import *
 # prunes it once per radius, ranks the candidate DV edges once per criterion, and then evaluates
 # all requested DV budgets from the same ranked edge list.
 
-Ns = [150]                    # list of network sizes
+Ns = [2000]                    # list of network sizes
 
 cfg = SimulationConfig(
     rate_min=0.0,
@@ -41,10 +41,10 @@ print(budget_list)
 candidate_ranking_criteria = [
     'centrality',
     # 'geodetic_distance',
-    'increasing_geodetic_distance',
+    # 'increasing_geodetic_distance',
     'decreasing_geodetic_distance',
-    'increasing_topological_distance',
-    'decreasing_topological_distance',
+    # 'increasing_topological_distance',
+    # 'decreasing_topological_distance',
     # 'topological_distance',
     'random',
     'degree',
@@ -69,7 +69,7 @@ p_darkcount = state_of_the_art_params.p_darkcount
 q = state_of_the_art_params.q
 
 # Defining the set of node densities to be simulated
-rho_span = '_wide'              # providing some presets of points for the plots: '_focus', '_wide' or anything else
+rho_span = '_focus'              # providing some presets of points for the plots: '_focus', '_wide' or anything else
 if rho_span == '_focus':        # for Fig. 1b
     n_iter, n_couples = 40, 10
     rhos = 0.14 * 10 ** np.linspace(-2.3, -1.9, 20)
@@ -121,7 +121,7 @@ for N in Ns:
     print('Analysis is iterated for the following DV budgets: %s' % str(budget_list))
     print('Analysis is iterated for the following ranking criteria: %s' % str(candidate_ranking_criteria))
 
-    folder = os.path.join("budget_outputs", "N%d" % N)
+    folder = os.path.join("budget_outputs", "N%d" % N + rho_span if rho_span == '_focus' else '')
     os.makedirs(folder, exist_ok=True)
     os.chdir(folder)
     graph_dir = "graphs"
@@ -323,7 +323,7 @@ for N in Ns:
         for DV_budget in budgets_to_run:
             save_budget_outputs(
                 DV_budget,
-                suffix_by_criterion_budget[ranking_criterion][DV_budget],
+                suffix_by_criterion_budget[ranking_criterion][DV_budget] + rho_span if rho_span == '_focus' else '',
                 radii,
                 rhos,
                 qkd,
