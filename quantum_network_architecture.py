@@ -12,6 +12,9 @@ import requests
 import zipfile
 import io
 from global_land_mask import globe
+import osmnx as ox
+import geopandas as gpd
+from shapely.geometry import Point
 
 
 class QuantumNetworkBuilder:
@@ -684,330 +687,192 @@ class QuantumNetworkBuilder:
         print(f"Tier 3 Complete. Added {added_count} real organic distribution nodes.")
         return self.G
 
-    def generate_tier4_fractal(self, target_regions=['Catalonia'], m1=2, m2=1, p=0.15, pop_scale=1000):
-        print(f"Executing Integrated Tier 4 Fractal Access Layer for {target_regions}...")
-
-        # 1. Identify Anchors (T1, T2 & T3 hubs)
-        hubs = [n for n, attr in self.G.nodes(data=True) if attr.get('region') in target_regions and (
-                'Tier1' in attr.get('type', '') or
-                'Tier2' in attr.get('type', '') or
-                'Tier3' in attr.get('type', ''))]
-
-        if not hubs:
-            print("No backbone anchors found.")
+    def generate_tier4_fractal(self, target_cities=None, target_regions=None, mode='backbone_anchored', m1=2, m2=1,
+                               p=0.15, pop_scale=1000, min_users=15, max_users=2000):
+        # 1. Determine the context
+        if target_cities:
+            valid_city = next((city for city in target_cities if city in self.G.nodes()), None)
+            if not valid_city: return self.G
+            inferred_region = self.G.nodes[valid_city].get('region', 'Unknown')
+            target_regions = [inferred_region]
+        elif not target_regions:
             return self.G
+
+        # 2. Identify all hubs for Voronoi territories & Anchoring
+        all_regional_hubs = [n for n, attr in self.G.nodes(data=True) if attr.get('region') in target_regions and (
+                'Tier1' in attr.get('type', '') or 'Tier2' in attr.get('type', '') or 'Tier3' in attr.get('type', ''))]
 
         hub_coords_dict = {n: np.array([[np.radians(self.G.nodes[n]['pos'][1]), np.radians(self.G.nodes[n]['pos'][0])]])
-                           for n in hubs}
+                           for n in all_regional_hubs}
 
-        # --- COMPLETELY DYNAMIC BORDER PATROL SETUP ---
-        print(f"Mobilizing dynamic international border patrol for {target_regions[0]}...")
+        hubs_to_populate = [n for n in target_cities if n in self.G.nodes()] if target_cities else all_regional_hubs
+        if not hubs_to_populate: return self.G
 
-        # 1. Dynamically calculate the bounding box based on the known region
-        known_region_cities = self.cities[self.cities['region'] == target_regions[0]]
-        if known_region_cities.empty:
-            print(f"Error: No known cities in {target_regions[0]} to establish borders.")
+        # --- DYNAMIC VORONOI TREE ---
+        all_hub_coords_arr = np.vstack(list(hub_coords_dict.values()))
+        voronoi_tree = BallTree(all_hub_coords_arr, metric='haversine')
+
+        # --- POLYGON UPGRADE ---
+        try:
+            known_region_cities = self.cities[self.cities['region'] == target_regions[0]]
+            home_country = known_region_cities.iloc[0][
+                'country'] if not known_region_cities.empty and 'country' in known_region_cities.columns else 'Spain'
+
+            query = f"{target_regions[0]}, {home_country}"
+            gdf_region = ox.geocode_to_gdf(query)
+            target_polygon = gdf_region.geometry.iloc[0]
+            min_lon, min_lat, max_lon, max_lat = target_polygon.bounds
+        except Exception as e:
+            print(f"Error downloading Polygon: {e}")
             return self.G
+        # ----------------------------------------------------------------------
 
-        min_lat, max_lat = known_region_cities['latitude'].min(), known_region_cities['latitude'].max()
-        min_lon, max_lon = known_region_cities['longitude'].min(), known_region_cities['longitude'].max()
-
-        # Add a 1.0 degree buffer (~111km) to catch international border spillovers
-        patrol_bounds = (min_lat - 1.0, max_lat + 1.0, min_lon - 1.0, max_lon + 1.0)
-
-        # 2. Detect which countries overlap this buffer zone using your base CSV
-        buffer_cities = self.cities[
-            (self.cities['latitude'] >= patrol_bounds[0]) & (self.cities['latitude'] <= patrol_bounds[1]) &
-            (self.cities['longitude'] >= patrol_bounds[2]) & (self.cities['longitude'] <= patrol_bounds[3])
-            ]
-
-        # Standard Eurostat to GeoNames ISO mapping
-        iso_map = {
-            'Spain': 'ES', 'France': 'FR', 'Andorra': 'AD', 'Portugal': 'PT',
-            'Germany': 'DE', 'Italy': 'IT', 'United Kingdom': 'GB', 'Belgium': 'BE',
-            'Netherlands': 'NL', 'Switzerland': 'CH', 'Austria': 'AT', 'Poland': 'PL'
-        }
-
-        # Extract unique country codes found in the buffer
-        target_isos = []
-        if 'country' in buffer_cities.columns:
-            neighboring_countries = buffer_cities['country'].unique()
-            target_isos = [iso_map.get(c) for c in neighboring_countries if c in iso_map]
-
-        # Ensure the home country is always in the list
-        home_country = known_region_cities.iloc[0]['country'] if 'country' in known_region_cities.columns else 'Spain'
-        home_iso = iso_map.get(home_country, 'ES')
-        if home_iso not in target_isos:
-            target_isos.append(home_iso)
-
-        # Edge-case: Eurostat often skips microstates. If we detect a Spain/France border, manually inject Andorra.
-        if 'ES' in target_isos and 'FR' in target_isos and 'AD' not in target_isos:
-            target_isos.append('AD')
-
-        # 3. Load Customs Agents for all detected surrounding countries
-        patrol_dfs = []
-        for iso in set(target_isos):
-            try:
-                df_country = self.get_regional_data(country_code=iso, region_bounds=patrol_bounds)
-                patrol_dfs.append(df_country)
-            except Exception as e:
-                pass  # Gracefully skip if a country download fails
-
-        full_patrol_df = pd.concat(patrol_dfs).reset_index(drop=True)
-
-        # 4. Find the target region's true admin code (using ONLY the home country to avoid border-town mistakes)
-        anchor_lat = known_region_cities.iloc[0]['latitude']
-        anchor_lon = known_region_cities.iloc[0]['longitude']
-
-        home_df = full_patrol_df[full_patrol_df['country_code'] == home_iso].reset_index(drop=True)
-        distances = (home_df['latitude'] - anchor_lat) ** 2 + (home_df['longitude'] - anchor_lon) ** 2
-        target_admin_code = home_df.loc[distances.idxmin(), 'admin1_code']
-
-        # 5. Build the International Border Tree
-        country_coords = np.array(
-            [[np.radians(row['latitude']), np.radians(row['longitude'])] for _, row in full_patrol_df.iterrows()])
-        country_admin_codes = full_patrol_df['admin1_code'].values
-        country_iso_codes = full_patrol_df['country_code'].values
-
-        border_tree = BallTree(country_coords, metric='haversine')
-        # ----------------------------------------------
-
-        all_new_t4_nodes = []
-        users_added = 0
-
-        # 2. Per-Hub Fractal Spawning
-        for hub in hubs:
+        for hub in hubs_to_populate:
             hub_lon, hub_lat = self.G.nodes[hub]['pos']
             pop = self.G.nodes[hub].get('pop', 50000)
-            num_users = min(400, max(20, int(pop / pop_scale)))
+            target_hub_idx = all_regional_hubs.index(hub)
 
-            dists = [haversine_distances(hub_coords_dict[hub], coords)[0][0] * 6371 for other_hub, coords in
-                     hub_coords_dict.items() if hub != other_hub]
-            safe_radius_km = np.max(dists) #if dists else 25.0
-            dynamic_scale_deg = max(0.05, (num_users / 400.0) * (safe_radius_km / 111.0))
+            num_users = min(max_users, max(min_users, int(pop / pop_scale))) if target_cities else min(
+                min(max_users, 400), max(min_users, int(np.sqrt(pop) * 0.5)))
 
-            H = nx.Graph()
-            H.add_node(hub)
-            active_nodes = [hub]
-            local_new_nodes = []
+            dists_rad = [haversine_distances(hub_coords_dict[hub], coords)[0][0] for other_hub, coords in
+                         hub_coords_dict.items() if hub != other_hub]
+            nearest_dist_deg = np.degrees(np.min(dists_rad)) if dists_rad else 0.5
 
-            for i in range(num_users):
-                user_id = f"{hub}_User_{i}"
-                H.add_node(user_id)
-                local_new_nodes.append(user_id)
-                all_new_t4_nodes.append(user_id)
+            if mode in ['switch_ba', 'backbone_anchored']:
+                # =========================================================
+                # HUB AND SPOKE MODES (Skeleton and Meat)
+                # =========================================================
+                num_switches = max(1, int(num_users * 0.10))
+                num_end_users = num_users - num_switches
 
-                m = m1 if random.random() < p else m2
-                degrees = np.array([H.degree(t) for t in active_nodes])
-                probs = degrees / degrees.sum() if degrees.sum() > 0 else np.ones(len(active_nodes)) / len(active_nodes)
+                switch_nodes = [hub]
+                switch_coords = [(hub_lon, hub_lat)]
 
-                chosen = np.random.choice(active_nodes, size=min(m, len(active_nodes)), replace=False, p=probs)
-                for c in chosen:
-                    H.add_edge(user_id, c, edge_type='T4_Access')
-                active_nodes.append(user_id)
+                # Place Switches
+                for i in range(num_switches):
+                    switch_id = f"{hub}_Switch_{i}"
+                    placed = False
+                    attempts = 0
+                    curr_rad = nearest_dist_deg * 1.5
+                    while not placed and attempts < 1000:
+                        py = random.uniform(max(min_lat, hub_lat - curr_rad), min(max_lat, hub_lat + curr_rad))
+                        px = random.uniform(max(min_lon, hub_lon - curr_rad), min(max_lon, hub_lon + curr_rad))
+                        if target_polygon.contains(Point(px, py)):
+                            _, v_idx = voronoi_tree.query(np.array([[np.radians(py), np.radians(px)]]), k=1)
+                            if v_idx[0][0] == target_hub_idx and globe.is_land(py, px): placed = True
+                        attempts += 1
+                        if attempts % 100 == 0: curr_rad *= 1.2
+                    if not placed: px, py = hub_lon + random.uniform(-0.01, 0.01), hub_lat + random.uniform(-0.01, 0.01)
 
-            abstract_pos = nx.spring_layout(H, scale=dynamic_scale_deg, iterations=40)
-            hub_abs_lon, hub_abs_lat = abstract_pos[hub]
+                    self.G.add_node(switch_id, pos=(px, py), type='Tier4_Switch', region=target_regions[0])
+                    switch_nodes.append(switch_id)
+                    switch_coords.append((px, py))
 
-            for n in local_new_nodes:
-                px = abstract_pos[n][0] + (hub_lon - hub_abs_lon)
-                py = abstract_pos[n][1] + (hub_lat - hub_abs_lat)
+                # Wire Switches
+                if mode == 'switch_ba':
+                    # WIRING OPTION 1: Dual Barabasi-Albert for Switches
+                    H_switches = nx.Graph()
+                    H_switches.add_node(switch_nodes[0])
+                    active_switches = [switch_nodes[0]]
 
-                # 1. Ocean Rotation: Keep it on land
-                angle = 0
-                while not globe.is_land(py, px) and angle < 360:
-                    angle += 15
-                    theta = np.radians(angle)
-                    rel_x, rel_y = px - hub_lon, py - hub_lat
-                    px = hub_lon + (np.cos(theta) * rel_x) - (np.sin(theta) * rel_y)
-                    py = hub_lat + (np.sin(theta) * rel_x) + (np.cos(theta) * rel_y)
+                    for i in range(1, len(switch_nodes)):
+                        new_s = switch_nodes[i]
+                        H_switches.add_node(new_s)
 
-                # 2. STRICT ADMIN BORDER PATROL: Keep it inside the target region
-                attempts = 0
-                while attempts < 20:
-                    pt = np.array([[np.radians(py), np.radians(px)]])
-                    _, idx = border_tree.query(pt, k=1)
+                        degrees = np.array([H_switches.degree(t) for t in active_switches])
+                        probs = degrees / degrees.sum() if degrees.sum() > 0 else np.ones(len(active_switches)) / len(
+                            active_switches)
+                        m = min(m1 if random.random() < p else m2, len(active_switches))
 
-                    nearest_admin = country_admin_codes[idx[0][0]]
-                    nearest_country = country_iso_codes[idx[0][0]]
+                        chosen = np.random.choice(active_switches, size=m, replace=False, p=probs)
+                        for c in chosen:
+                            self.G.add_edge(new_s, c, edge_type='T4_Metro_BA')
+                            H_switches.add_edge(new_s, c)
+                        active_switches.append(new_s)
 
-                    # DYNAMIC CHECK: Matches target region AND target country
-                    if nearest_admin == target_admin_code and nearest_country == home_iso:
-                        break  # Safe!
+                elif mode == 'backbone_anchored':
+                    # WIRING OPTION 2: Direct line to Hub + Nearest Neighbor Mesh
+                    for i in range(1, len(switch_nodes)):
+                        s_id = switch_nodes[i]
+                        s_pt = np.array([[np.radians(switch_coords[i][1]), np.radians(switch_coords[i][0])]])
 
-                    # It spilled over a border! Pull it 15% closer to the hub and check again
-                    px = hub_lon + (px - hub_lon) * 0.85
-                    py = hub_lat + (py - hub_lat) * 0.85
-                    attempts += 1
+                        # 1. Connect to nearest main backbone hub (usually its own hub, but could be a closer T2)
+                        dists_to_hubs = haversine_distances(s_pt, all_hub_coords_arr)[0] * 6371
+                        nearest_hub_id = all_regional_hubs[np.argmin(dists_to_hubs)]
+                        self.G.add_edge(s_id, nearest_hub_id, edge_type='T4_Backbone_Anchor')
 
-                self.G.add_node(n, pos=(px, py), type='Tier4_User', region=target_regions[0])
-                for edge in H.edges(n):
-                    self.G.add_edge(edge[0], edge[1], edge_type='T4_Access')
-            users_added += num_users
+                        # 2. Connect to nearest local switch for redundancy (if close enough)
+                        switches_rad = np.array([[np.radians(y), np.radians(x)] for x, y in switch_coords])
+                        dists_to_switches = haversine_distances(s_pt, switches_rad)[0] * 6371
+                        dists_to_switches[i] = 9999  # Don't connect to self
+                        closest_switch_idx = np.argmin(dists_to_switches)
+                        if dists_to_switches[closest_switch_idx] < 15.0:  # Mesh threshold
+                            self.G.add_edge(s_id, switch_nodes[closest_switch_idx], edge_type='T4_Switch_Mesh')
 
-        # 3. Topological Weaving (Fuzzy Borders)
-        regional_nodes = [n for n, attr in self.G.nodes(data=True) if attr.get('region') in target_regions]
-        regional_coords = np.array(
-            [[np.radians(self.G.nodes[n]['pos'][1]), np.radians(self.G.nodes[n]['pos'][0])] for n in regional_nodes])
-        tree = BallTree(regional_coords, metric='haversine')
+                # Place End Users (Meat)
+                for i in range(num_end_users):
+                    user_id = f"{hub}_User_{i}"
+                    parent_idx = random.randint(0, len(switch_nodes) - 1)
+                    parent_id = switch_nodes[parent_idx]
+                    px = switch_coords[parent_idx][0] + np.random.normal(0, 0.005)
+                    py = switch_coords[parent_idx][1] + np.random.normal(0, 0.005)
 
-        for n in all_new_t4_nodes:
-            if self.G.degree(n) < 2: continue
+                    self.G.add_node(user_id, pos=(px, py), type='Tier4_User', region=target_regions[0])
+                    self.G.add_edge(user_id, parent_id, edge_type='T4_Access')
 
-            n_rad = np.array([[np.radians(self.G.nodes[n]['pos'][1]), np.radians(self.G.nodes[n]['pos'][0])]])
-            indices = tree.query_radius(n_rad, r=12.0 / 6371)[0]
+            elif mode == 'inflated_ba':
+                # =========================================================
+                # THE INFLATED PHYSICS CLOUD (Pure BA stretched over map)
+                # =========================================================
+                H = nx.Graph()
+                H.add_node(hub)
+                active_nodes = [hub]
+                local_nodes = []
 
-            valid_targets = [t for t in [regional_nodes[i] for i in indices] if
-                             t != n and not self.G.has_edge(n, t) and n.split('_')[0] != t.split('_')[0]]
+                # Build abstract topology first
+                for i in range(num_users):
+                    user_id = f"{hub}_User_{i}"
+                    H.add_node(user_id)
+                    local_nodes.append(user_id)
 
-            if valid_targets:
-                degrees = np.array([self.G.degree(t) for t in valid_targets])
-                probs = (degrees + 1) / (degrees + 1).sum()
-                self.G.add_edge(n, np.random.choice(valid_targets, p=probs), edge_type='T4_Fuzzy_Link')
+                    degrees = np.array([H.degree(t) for t in active_nodes])
+                    probs = degrees / degrees.sum() if degrees.sum() > 0 else np.ones(len(active_nodes)) / len(
+                        active_nodes)
+                    m = m1 if random.random() < p else m2
+                    chosen = np.random.choice(active_nodes, size=min(m, len(active_nodes)), replace=False, p=probs)
 
-        print(f"Tier 4 Complete. Added {users_added} users securely inside borders.")
-        return self.G
+                    for c in chosen:
+                        H.add_edge(user_id, c)
+                    active_nodes.append(user_id)
 
-    def generate_tier4_unified(self, target_regions=['Catalonia'], m1=2, m2=1, p=0.15, pop_scale=1000):
-        print(f"Executing Unified Tier 4 Macro-Fractal for {target_regions}...")
+                # Map abstract topology to 2D Physics space
+                kk_pos = nx.kamada_kawai_layout(H)
 
-        # 1. Identify Regional Backbone Anchors
-        hubs = [n for n, attr in self.G.nodes(data=True) if attr.get('region') in target_regions and (
-                'Tier1' in attr.get('type', '') or
-                'Tier2' in attr.get('type', '') or
-                'Tier3' in attr.get('type', ''))]
+                # Stretch to fill Voronoi boundaries
+                scale_deg = nearest_dist_deg * 0.9
 
-        if not hubs:
-            print("No backbone anchors found.")
-            return self.G
+                for n in local_nodes:
+                    # Inflate mapping
+                    px = hub_lon + kk_pos[n][0] * scale_deg
+                    py = hub_lat + kk_pos[n][1] * scale_deg
 
-        # --- COMPLETELY DYNAMIC BORDER PATROL SETUP ---
-        print(f"Mobilizing dynamic international border patrol for {target_regions[0]}...")
+                    # Boundary Enforcement (If it stretched outside the polygon, pull it back like a rubber band)
+                    attempts = 0
+                    while not (target_polygon.contains(Point(px, py)) and globe.is_land(py, px)) and attempts < 100:
+                        px = hub_lon + (px - hub_lon) * 0.95
+                        py = hub_lat + (py - hub_lat) * 0.95
+                        attempts += 1
 
-        known_region_cities = self.cities[self.cities['region'] == target_regions[0]]
-        min_lat, max_lat = known_region_cities['latitude'].min(), known_region_cities['latitude'].max()
-        min_lon, max_lon = known_region_cities['longitude'].min(), known_region_cities['longitude'].max()
-        patrol_bounds = (min_lat - 1.0, max_lat + 1.0, min_lon - 1.0, max_lon + 1.0)
+                    # Dynamically assign type based on BA degree evolution!
+                    deg = H.degree(n)
+                    n_type = 'Tier4_User' if deg == 1 else 'Tier4_Switch'
+                    self.G.add_node(n, pos=(px, py), type=n_type, region=target_regions[0])
 
-        buffer_cities = self.cities[
-            (self.cities['latitude'] >= patrol_bounds[0]) & (self.cities['latitude'] <= patrol_bounds[1]) &
-            (self.cities['longitude'] >= patrol_bounds[2]) & (self.cities['longitude'] <= patrol_bounds[3])
-            ]
+                    for neighbor in H.neighbors(n):
+                        if neighbor in self.G.nodes():
+                            self.G.add_edge(n, neighbor, edge_type='T4_Inflated_Link')
 
-        iso_map = {'Spain': 'ES', 'France': 'FR', 'Andorra': 'AD', 'Portugal': 'PT', 'Germany': 'DE', 'Italy': 'IT'}
-        target_isos = [iso_map.get(c) for c in buffer_cities['country'].unique() if
-                       c in iso_map] if 'country' in buffer_cities.columns else []
-
-        home_country = known_region_cities.iloc[0]['country'] if 'country' in known_region_cities.columns else 'Spain'
-        home_iso = iso_map.get(home_country, 'ES')
-        if home_iso not in target_isos: target_isos.append(home_iso)
-        if 'ES' in target_isos and 'FR' in target_isos and 'AD' not in target_isos: target_isos.append('AD')
-
-        patrol_dfs = []
-        for iso in set(target_isos):
-            try:
-                patrol_dfs.append(self.get_regional_data(country_code=iso, region_bounds=patrol_bounds))
-            except:
-                pass
-
-        full_patrol_df = pd.concat(patrol_dfs).reset_index(drop=True)
-
-        anchor_lat, anchor_lon = known_region_cities.iloc[0]['latitude'], known_region_cities.iloc[0]['longitude']
-        home_df = full_patrol_df[full_patrol_df['country_code'] == home_iso].reset_index(drop=True)
-        distances = (home_df['latitude'] - anchor_lat) ** 2 + (home_df['longitude'] - anchor_lon) ** 2
-        target_admin_code = home_df.loc[distances.idxmin(), 'admin1_code']
-
-        country_coords = np.array(
-            [[np.radians(row['latitude']), np.radians(row['longitude'])] for _, row in full_patrol_df.iterrows()])
-        country_admin_codes, country_iso_codes = full_patrol_df['admin1_code'].values, full_patrol_df[
-            'country_code'].values
-        border_tree = BallTree(country_coords, metric='haversine')
-        # ----------------------------------------------
-
-        # 2. Setup the Unified Physics Environment
-        total_pop = sum(self.G.nodes[h].get('pop', 10000) for h in hubs)
-        num_users = min(2500,
-                        max(100, int(total_pop / pop_scale)))  # Cap at 2500 so the physics engine doesn't melt your PC
-        print(f"Spawning {num_users} users across the unified backbone...")
-
-        H = nx.Graph()
-        initial_pos = {}
-        for h in hubs:
-            H.add_node(h)
-            initial_pos[h] = self.G.nodes[h]['pos']
-
-        # Inject existing backbone edges into the physics engine so it feels the tension between cities
-        for u, v in self.G.edges(hubs):
-            if u in hubs and v in hubs:
-                H.add_edge(u, v)
-
-        active_nodes = list(hubs)
-        new_nodes = []
-
-        # 3. MACRO-SCALE DUAL BARABÁSI-ALBERT
-        for i in range(num_users):
-            user_id = f"T4_MacroUser_{i}"
-            H.add_node(user_id)
-            new_nodes.append(user_id)
-
-            m = m1 if random.random() < p else m2
-            degrees = np.array([H.degree(t) for t in active_nodes])
-            probs = degrees / degrees.sum() if degrees.sum() > 0 else np.ones(len(active_nodes)) / len(active_nodes)
-
-            chosen = np.random.choice(active_nodes, size=min(m, len(active_nodes)), replace=False, p=probs)
-            for c in chosen:
-                H.add_edge(user_id, c, edge_type='T4_Access')
-
-            active_nodes.append(user_id)
-
-            # Give it a starting point near its primary connection so the physics engine doesn't explode
-            root_pos = initial_pos[chosen[0]]
-            initial_pos[user_id] = (root_pos[0] + random.uniform(-0.05, 0.05),
-                                    root_pos[1] + random.uniform(-0.05, 0.05))
-
-        # 4. UNIFIED PHYSICS ENGINE
-        print("Running macro-physics simulation. (This may take 5-10 seconds to settle thousands of nodes...)")
-        # 'k' dictates ideal spacing. The hubs are completely fixed in place.
-        final_pos = nx.spring_layout(H, pos=initial_pos, fixed=hubs, k=0.018, iterations=40)
-
-        # 5. GEOGRAPHY & CUSTOMS APPLICATION
-        print("Applying geography and border constraints...")
-        for n in new_nodes:
-            px, py = final_pos[n]
-
-            # Find its closest anchor for the pull-back string
-            closest_hub = list(H.neighbors(n))[0]
-            hub_lon, hub_lat = initial_pos[closest_hub]
-
-            # Ocean Check
-            angle = 0
-            while not globe.is_land(py, px) and angle < 360:
-                angle += 15
-                theta = np.radians(angle)
-                rel_x, rel_y = px - hub_lon, py - hub_lat
-                px = hub_lon + (np.cos(theta) * rel_x) - (np.sin(theta) * rel_y)
-                py = hub_lat + (np.sin(theta) * rel_x) + (np.cos(theta) * rel_y)
-
-            # Strict Border Patrol
-            attempts = 0
-            while attempts < 20:
-                pt = np.array([[np.radians(py), np.radians(px)]])
-                _, idx = border_tree.query(pt, k=1)
-
-                if country_admin_codes[idx[0][0]] == target_admin_code and country_iso_codes[idx[0][0]] == home_iso:
-                    break
-
-                    # Pull back towards its anchor
-                px = hub_lon + (px - hub_lon) * 0.85
-                py = hub_lat + (py - hub_lat) * 0.85
-                attempts += 1
-
-            self.G.add_node(n, pos=(px, py), type='Tier4_User', region=target_regions[0])
-            for neighbor in H.neighbors(n):
-                if not self.G.has_edge(n, neighbor):
-                    self.G.add_edge(n, neighbor, edge_type='T4_Access')
-
-        print(f"Unified Tier 4 Complete. Wove {num_users} users into the regional continuum.")
         return self.G
 
     def plot_network(self, mode_name="default"):
@@ -1023,12 +888,19 @@ class QuantumNetworkBuilder:
             e_color = edge_data.get('color', '#808080')
             e_type = edge_data.get('edge_type', 'Unknown')
 
-            # Make Tier 1 & 2 highly visible, dim the user access links
-            e_weight = 2.5 if 'T1' in e_type else (2.0 if 'T2' in e_type else (1.5 if 'T3' in e_type else 1.0))
-            e_opacity = 0.9 if 'T1' in e_type else (0.6 if 'T2' in e_type else 0.3)
-
-            if 'DIAMETER_PATH' in e_type:
-                e_weight = e_weight * 2
+            # Dynamic thickness and opacity mapped to the specific physics tiers
+            if 'DIAMETER' in e_type:
+                e_weight, e_opacity = 6.0, 1.0  # Neon path stands out above all
+            elif 'T1' in e_type or 'Satellite' in e_type:
+                e_weight, e_opacity = 4.0, 0.9  # Thickest, most opaque backbone
+            elif 'T2' in e_type:
+                e_weight, e_opacity = 3.0, 0.8  # Medium backhaul
+            elif 'T3' in e_type:
+                e_weight, e_opacity = 2.0, 0.7  # Thin distribution
+            elif 'T4' in e_type or 'Access' in e_type:
+                e_weight, e_opacity = 1.5, 0.8  # BOOM: Made Tier 4 much thicker and brighter!
+            else:
+                e_weight, e_opacity = 1.0, 0.5  # Fallback
 
             folium.PolyLine(
                 locations=[[u_lat, u_lon], [v_lat, v_lon]],
@@ -1039,7 +911,9 @@ class QuantumNetworkBuilder:
             lon, lat = node_data['pos']
             n_color = node_data.get('color', '#FFFFFF')
             n_type = node_data.get('type', 'Unknown')
-            n_radius = 5 if 'Tier1' in n_type else (3 if 'Tier2' in n_type else (2 if 'Tier3' in n_type else 1))
+
+            # Dynamic radius so core hubs are giant and users are small dots (also globally increased!)
+            n_radius = 6 if 'Tier1' in n_type else (4 if 'Tier2' in n_type else (3 if 'Tier3' in n_type else 2.0))
 
             folium.CircleMarker(
                 location=[lat, lon], radius=n_radius, color=n_color, fill=True,
@@ -1049,7 +923,6 @@ class QuantumNetworkBuilder:
         html2canvas_src = '<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>'
         m.get_root().html.add_child(Element(html2canvas_src))
 
-        # Notice how mode_name is injected directly into the defaultName variable here!
         screenshot_js = f"""
                 <div style="position: absolute; top: 10px; left: 50px; z-index: 9999;">
                     <button id="capture-btn" style="padding: 10px; background-color: white; border: 2px solid rgba(0,0,0,0.2); border-radius: 4px; cursor: pointer; font-weight: bold; font-family: sans-serif;">
@@ -1081,7 +954,6 @@ class QuantumNetworkBuilder:
                 """
         m.get_root().html.add_child(Element(screenshot_js))
 
-        # Save the file with the specific mode name
         file_name = f"quantum_map_{mode_name}.html"
         m.save(file_name)
         print(f"Saved interactive map as {file_name}")
@@ -1574,6 +1446,116 @@ class QuantumNetworkBuilder:
         if hasattr(self, 'plot_network'):
             map_name = f"tier3_{region1.replace(' ', '')}_{region2.replace(' ', '')}"
             self.plot_network(mode_name=map_name)
+
+    def evaluate_tier4_modes(self, city1='Barcelona (greater city)', city2='München', max_users=1500):
+        import networkx as nx
+        modes_to_test = ['switch_ba', 'backbone_anchored', 'inflated_ba']
+
+        print(f"\n--- Running Multi-Mode Tier 4 Evaluation for {city1} and {city2} ---")
+        latex_rows = []
+
+        def calc_metrics(H, name, nodes_of_interest):
+            N = len(nodes_of_interest)
+            if N == 0: return f"        {name} & 0 & 0 & 0.00 & 0.00 & 0 & 0.0\\% \\\\"
+
+            E = H.number_of_edges()
+            avg_k = (2 * E) / N if N > 0 else 0
+            end_users = sum(1 for n in nodes_of_interest if
+                            'Tier4' in self.G.nodes[n].get('type', '') and self.G.degree(n) == 1)
+
+            g_components = list(nx.connected_components(self.G))
+            best_cc_in_G = max(g_components,
+                               key=lambda c: len(c.intersection(nodes_of_interest))) if g_components else set()
+            h_lcc_nodes = list(best_cc_in_G.intersection(nodes_of_interest))
+            perc_lcc = (len(h_lcc_nodes) / N) * 100 if N > 0 else 0
+
+            if len(h_lcc_nodes) > 1:
+                total_path_len, max_len, pair_count = 0, 0, 0
+                for u in h_lcc_nodes:
+                    lengths = nx.single_source_shortest_path_length(self.G, u)
+                    for v in h_lcc_nodes:
+                        if u != v and v in lengths:
+                            d = lengths[v]
+                            total_path_len += d
+                            pair_count += 1
+                            if d > max_len: max_len = d
+                L = total_path_len / pair_count if pair_count > 0 else 0
+                D = max_len
+            else:
+                L, D = 0, 0
+            return f"        {name} & {N} & {end_users} & {avg_k:.2f} & {L:.2f} & {D} & {perc_lcc:.1f}\\% \\\\"
+
+        for mode in modes_to_test:
+            print(f"\n>> Simulating Mode: {mode.upper()}")
+
+            # 1. PURGE existing Tier 4 nodes (so we don't stack networks on top of each other)
+            t4_nodes = [n for n, attr in self.G.nodes(data=True) if 'Tier4' in attr.get('type', '')]
+            self.G.remove_nodes_from(t4_nodes)
+
+            # 2. GENERATE the networks
+            self.generate_tier4_fractal(target_cities=[city1], pop_scale=100, max_users=max_users, mode=mode)
+            self.generate_tier4_fractal(target_cities=[city2], pop_scale=100, max_users=max_users, mode=mode)
+
+            # 3. IDENTIFY the nodes
+            nodes_c1 = [n for n in self.G.nodes() if
+                        n == city1 or str(n).startswith(f"{city1}_User") or str(n).startswith(f"{city1}_Switch")]
+            nodes_c2 = [n for n in self.G.nodes() if
+                        n == city2 or str(n).startswith(f"{city2}_User") or str(n).startswith(f"{city2}_Switch")]
+
+            sub_c1 = self.G.subgraph(nodes_c1)
+            sub_c2 = self.G.subgraph(nodes_c2)
+            sub_both = self.G.subgraph(nodes_c1 + nodes_c2)
+
+            # 4. CALCULATE metrics
+            latex_rows.append(
+                f"\\multicolumn{{7}}{{c}}{{\\textbf{{Architecture: {mode.replace('_', ' ').title()}}}}} \\\\")
+            latex_rows.append(calc_metrics(sub_c1, city1, nodes_c1))
+            latex_rows.append(calc_metrics(sub_c2, city2, nodes_c2))
+            latex_rows.append(calc_metrics(sub_both, "Combined Cross-Border Routing", nodes_c1 + nodes_c2))
+            latex_rows.append("\\midrule")
+
+            # 5. TOPOLOGICAL COLORING
+            for n, d in self.G.nodes(data=True):
+                if 'Tier4' in d.get('type', ''):
+                    deg = self.G.degree(n)
+                    if deg == 1:
+                        d['color'] = '#FFFF00'  # Yellow: End User
+                    elif deg == 2:
+                        d['color'] = '#1E90FF'  # Blue: Repeater
+                    else:
+                        d['color'] = '#FF0000'  # Red: Switch
+            for u, v, d in self.G.edges(data=True):
+                if 'T4' in d.get('edge_type', ''):
+                    deg_u, deg_v = self.G.degree(u), self.G.degree(v)
+                    if deg_u == 1 or deg_v == 1:
+                        d['color'] = '#FFFF00'
+                    elif deg_u >= 3 and deg_v >= 3:
+                        d['color'] = '#FF0000'
+                    else:
+                        d['color'] = '#1E90FF'
+
+            # 6. PLOT AND SAVE MAP
+            if hasattr(self, 'plot_network'):
+                self.plot_network(mode_name=f"t4_eval_{mode}")
+
+        # Finalize the LaTeX Table
+        latex_table = f"""
+\\subsubsection{{Access Architecture Evaluation (Tier 4)}}
+\\begin{{table}}[htbp]
+    \\centering
+    \\caption{{Comparative evaluation of three local metropolitan access architectures. ($N$ = Nodes, $L$ = Average Path Length, $D$ = Diameter). Path metrics include full global routing between cities.}}
+    \\resizebox{{\\textwidth}}{{!}}{{%
+    \\begin{{tabular}}{{lrrrrrr}}
+        \\toprule
+        City / Metric & $N$ & End Users & $\\langle k \\rangle$ & Avg $L$ & Max $L$ ($D$) & \\% LCC \\\\
+        \\midrule
+{chr(10).join(latex_rows)}
+    \\end{{tabular}}%
+    }}
+    \\label{{tab:t4_multi_mode_metrics}}
+\\end{{table}}
+"""
+        print(latex_table)
 # 1. Load your newly generated CSV
 df = pd.read_csv('ultimate_city_coordinates.csv')
 
@@ -1589,13 +1571,31 @@ net3.generate_tier1(mode = 'backbone_spoke')
 net3.generate_tier2(target_countries=['Spain', 'Germany'])
 #net3.evaluate_tier2(country2 = 'Germany')
 # 3 & 4. Regional and Fractal Networks (Run them ONE BY ONE)
-regions_to_map = ['Catalonia', 'Bavaria']
+#regions_to_map = ['Catalonia']
 
-for region in regions_to_map:
-    print(f"\n--- INITIATING BUILD FOR: {region.upper()} ---")
-    net3.generate_tier3(target_regions=[region])
-    net3.generate_tier4_fractal(target_regions=[region], pop_scale=500)
+#for region in regions_to_map:
+    #print(f"\n--- INITIATING BUILD FOR: {region.upper()} ---")
+    #net3.generate_tier3(target_regions=[region])
+    #net3.generate_tier4_fractal(target_regions=[region], pop_scale=500)
 #net3.evaluate_tier3()
-# 5. Plot with the Dynamic Edge Colors
-net3.plot_network_top()
+# 1. Build and Evaluate Tier 3 for the ENTIRE regions
+# (This automatically calls generate_tier3_regional for both Catalonia and Bavaria)
+net3.evaluate_tier3(region1='Catalonia', region2='Bavaria')
+
+# 2. Zoom in and build Tier 4 ONLY for the specific cities
+# We loop through them one by one so the dynamic border patrol properly isolates each city's country!
+cities_to_map = ['Barcelona (greater city)', 'München']
+
+for city in cities_to_map:
+    print(f"\n--- INITIATING HIGH-DENSITY TIER 4 FOR CITY: {city.upper()} ---")
+
+    # target_cities ensures it only spawns fractal nodes inside the specified city bounds.
+    # We crank max_users up to 2000 to simulate a dense metropolitan access network.
+    net3.generate_tier4_fractal(target_cities=[city], pop_scale=100, max_users=2000)
+
+# 3. Save the final comprehensive map
+#print("\n--- GENERATING FINAL MAP ---")
+net3.evaluate_tier4_modes()
+#net3.plot_network_top()
+
 
