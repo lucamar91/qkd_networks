@@ -69,10 +69,10 @@ p_darkcount = state_of_the_art_params.p_darkcount
 q = state_of_the_art_params.q
 
 # Defining the set of node densities to be simulated
-rho_span = '_focus'              # providing some presets of points for the plots: '_focus', '_wide' or anything else
+rho_span = '_wide'              # providing some presets of points for the plots: '_focus', '_wide' or anything else
 if rho_span == '_focus':        # for Fig. 1b
     n_iter, n_couples = 40, 10
-    rhos = 0.14 * 10 ** np.linspace(-2.3, -1.9, 20)
+    rhos = 0.14 * 10 ** np.linspace(-2.5, -1.5, 20)
 elif rho_span == '_wide':
     n_iter, n_couples = 10, 10
     rhos = 0.14 * 10 ** np.linspace(-4., 1., 50)
