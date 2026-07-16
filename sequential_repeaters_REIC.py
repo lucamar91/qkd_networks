@@ -323,7 +323,7 @@ class QuantumRepeaterNetwork:
             self.scale_km    = float(scale)
             self.scale_label = f'{scale} km'
 
-        self.Probs_mtx, self.eta_A_mtx, self.eta_B_mtx = \
+        self.Probs_mtx, self.eta_mtx = \
             self._build_prob_matrix()
 
     # ------------------------------------------------------------------
@@ -338,22 +338,23 @@ class QuantumRepeaterNetwork:
         p    = self.params
         A, d = self.A, self.dist
 
-        dist_A = dist_B = d / 2
+        dist = d / 2
         p.eta_M = 1.0
-        P_A = P_B = p.p_pair * p.eta_c * 10 ** (-p.alpha * dist_A / 10) * A * p.eta_M # Probability to create photon pair x it survives to midpoint beam splitter
-        P_ent_matrix = 2 * P_A * P_B * (p_det**2) * (1 - P_B * p_det) * (1 - P_A * p_det) # We need A and B to succeed exactly once each (there are two ways this could happen which is why we multiply by 2). This is double rail
+        P_click = p.p_det * p.p_pair * p.eta_c * 10 ** (-p.alpha * dist / 10) * A * p.eta_M # Probability to create photon pair x it survives to midpoint beam splitter
 
         if self.multiplexing_type == 'accumulated':
-            P_ent_matrix= 1-(1-P_ent_matrix)**self.M
+            P_click= 1-(1-P_click)**self.M
         elif self.multiplexing_type == 'single_burst':
             from scipy.stats import binom
             m_required = 2 ** self.distillation_level
-            P_ent_matrix = 1 - binom.cdf(m_required - 1, self.M, P_ent_matrix) # Check this
+            P_click = 1 - binom.cdf(m_required - 1, self.M, P_click) # Check this
         elif self.multiplexing_type is None:
             pass
         else:
             raise ValueError("multiplexing_type must be 'accumulated', 'single_burst' or None")
-        return P_ent_matrix, P_A/p.p_pair, P_B/p.p_pair
+
+        P_both = 0.5 * P_click/2
+        return P_both, P_click
 
     # ------------------------------------------------------------------
     # Public analysis methods
@@ -379,10 +380,6 @@ class QuantumRepeaterNetwork:
         W = np.zeros_like(self.Probs_mtx)
         nz = self.Probs_mtx > 0
         W[nz] = -np.log2(self.Probs_mtx[nz]) - np.log2(p.P_BSM)
-        if self.just_transmittance == True:
-            W[nz] = -np.log2(self.Probs_mtx[nz]) - np.log2(p.P_BSM) + np.log2(p.p_pair * p.eta_c**2 * p.p_det**2)
-        else:
-            W[nz] = -np.log2(self.Probs_mtx[nz]) - np.log2(p.P_BSM)
         G = nx.from_numpy_array(W)
         return nx.single_source_dijkstra(G, source, target=target, weight='weight')
 
@@ -438,6 +435,33 @@ class QuantumRepeaterNetwork:
             return (p_true * p.q_0 + 0.5 *p_acc) / (p_true + p_acc)
         else:
             raise ValueError("multiphoton must be True or False")
+
+    def F_link(self, a, b):
+        """
+        Per-link QBER for link (a, b), accounting for baseline QBER,
+        dark counts, and multi-photon contributions.
+
+        Parameters
+        ----------
+        a, b : int   Node indices.
+
+        Returns
+        -------
+        float   QBER in [0, 0.5]
+        """
+        p     = self.params
+        p_click = self.eta_mtx[a, b]
+        p_dc  = p.R_dark * p.delta_det
+
+        p01 = p10 = 0.5*p_click
+        p11 = 2*(p10*p_dc)+p_dc**2
+        V = 1-2*p.q_0
+        F_rail_2 = 0.5 * (1 + V) * (p10 + p01) / (p10 + p01 + p11)
+        T = 1/p_click
+        V = V * np.exp(-(T / p.nu) / p.T_coh)
+        F_rail_1 = 0.5 * (1 + V) * (p10 + p01) / (p10 + p01 + p11)
+        F = F_rail_1 * F_rail_2
+        return F
 
     def calculate_metrics(self, path):
         """
@@ -537,6 +561,148 @@ class QuantumRepeaterNetwork:
                     T = (T + T_link) / p.P_BSM
 
                 Q_new  = self.Q_link(a, b)
+                W_link = 1 - 2 * Q_new
+
+                # Coherence decay of the already-stored pair during T_link
+                W = W * np.exp(-(T_link / p.nu) / p.T_coh) * W_link
+
+                for level in range(self.distillation_level):
+                    if self.distillation == True and self.multiplexing_type == 'single_burst':
+                        # We are distilling the SWAPPED pairs (W), which arrived simultaneously
+                        F1 = F2 = (1 + 3 * W) / 4
+                        F_out, P_suc = BBPSSW(F1, F2)
+
+                        # Penalize the TOTAL time, update the TOTAL fidelity
+                        T = T / P_suc
+                        W = (4 * F_out - 1) / 3
+
+                    elif self.distillation == True and self.multiplexing_type != 'single_burst':
+                        # Sequential: Swapped Pair 1 waited for Swapped Pair 2
+                        W_aged = W * np.exp(-(T / p.nu) / p.T_coh)
+                        F_aged = (1 + 3 * W_aged) / 4
+                        F_fresh = (1 + 3 * W) / 4
+                        F_out, P_suc = BBPSSW(F_aged, F_fresh)
+
+                        # Total time doubles because we had to wait for two complete chains to swap
+                        T = (2 * T) / P_suc
+                        W = (4 * F_out - 1) / 3
+
+                    elif self.distillation == False:
+                        pass
+
+                    else:
+                        raise ValueError(
+                            "distillation must be True or False"
+                        )
+        else:
+            raise ValueError("distillation_time must be 'before_swap' or 'after_swap'")
+
+        QBER  = (1 - W) / 2
+        F = (1 + 3 * W) / 4
+        R_raw = self.entanglement_rate(T)
+        R     = 0.5 * R_raw          # Sifting factor
+        H     = binary_entropy(QBER)
+        SKR   = R * (1 - 2 * H)
+        return R_raw, QBER, SKR, F
+
+    def calculate_metrics_F(self, path):
+        """
+        Compute total time T, end-to-end QBER, and SKR for *path*,
+        incorporating coherence decay and optional distillation.
+
+        The recurrence over hops i = 1 … N-1:
+          1. Generate link (a→b): T += 1/p_ent(a,b), divided by P_BSM.
+          2. Apply decoherence: W_swap = W_prev * exp(-T_link/T_coh) * W_link(a,b).
+          3. If distillation is enabled, apply BBPSSW and update T accordingly.
+
+        Parameters
+        ----------
+        path : list of int   Ordered node indices.
+
+        Returns
+        -------
+        R_raw    : float   Entanglement generation rate
+        QBER : float   End-to-end QBER.
+        SKR  : float   Secret key rate [bit/s].
+        """
+        p = self.params
+
+        # ── first link ───────────────────────────────────────────────
+        a, b = path[0], path[1]
+        T    = 1.0 / self.Probs_mtx[a, b]
+        F    = self.F_link(a, b)
+        W    = (4 * F - 1) / 3
+
+        if self.distillation_time == 'before_swap':
+            for level in range(self.distillation_level):
+                # 1. DISTILL THE ELEMENTARY LINK (BEFORE THE SWAP)
+                if self.distillation == True and self.multiplexing_type == 'single_burst':
+                    F_link = (1 + 3 * W) / 4
+                    F_link_out, P_suc_link = BBPSSW(F_link, F_link)
+                    T = T / P_suc_link  # Parallel generation
+                    W = (4 * F_link_out - 1) / 3 # Turns back into a Werner state (needed for BBPSSW)
+
+                elif self.distillation == True and self.multiplexing_type != 'single_burst':
+                    # Sequential: Pair 1 waits for T_link while Pair 2 generates
+                    W_aged = W * np.exp(-(T / p.nu) / p.T_coh)
+                    F_aged = (1 + 3 * W_aged) / 4
+                    F_fresh = (1 + 3 * W) / 4
+                    F_link_out, P_suc_link = BBPSSW(F_aged, F_fresh)
+                    T = (2 * T) / P_suc_link  # Sequential generation
+                    W = (4 * F_link_out - 1) / 3
+
+                elif self.distillation == False:
+                    pass  # W_link remains unchanged
+                else:
+                    raise ValueError(
+                        "distillation must be True or False"
+                    )
+
+            # ── subsequent links ─────────────────────────────────────────
+            for i in range(2, len(path)):
+                a, b = path[i - 1], path[i]
+                T_link = 1.0 / self.Probs_mtx[a, b]
+                F_new = self.F_link(a, b)
+                W_new = (4 * F_new - 1) / 3
+
+                for level in range(self.distillation_level):
+
+                    if self.distillation == True and self.multiplexing_type == 'single_burst':
+                        F_link = (1 + 3 * W_link) / 4
+                        F_link_out, P_suc_link = BBPSSW(F_link, F_link)
+                        T_link = T_link / P_suc_link  # Parallel generation
+                        W_link = (4 * F_link_out - 1) / 3
+
+                    elif self.distillation == True and self.multiplexing_type != 'single_burst':
+                        # Sequential: Pair 1 waits for T_link while Pair 2 generates
+                        W_aged = W_link * np.exp(-(T_link / p.nu) / p.T_coh)
+                        F_aged = (1 + 3 * W_aged) / 4
+                        F_fresh = (1 + 3 * W_link) / 4
+                        F_link_out, P_suc_link = BBPSSW(F_aged, F_fresh)
+                        T_link = (2 * T_link) / P_suc_link  # Sequential generation
+                        W_link = (4 * F_link_out - 1) / 3
+
+                # 2. PERFORM THE SWAP (Sequential Wait & Decoherence)
+                # The accumulated chain 'W' waits while this newly purified link is generated
+                T = (T + T_link) / p.P_BSM
+                W_swap = W * np.exp(-(T_link / p.nu) / p.T_coh) * W_link
+
+                # 3. UPDATE THE CHAIN
+                W = W_swap
+        elif self.distillation_time == 'after_swap':
+            # ── subsequent links ─────────────────────────────────────────
+            for i in range(2, len(path)):
+                a, b   = path[i - 1], path[i]
+                T_link = 1.0 / self.Probs_mtx[a, b]
+
+                # Sequential wait: accumulate time, divide by P_BSM for swap
+                if self.multiplexing_type == 'single_burst':
+                    m_required = 2**self.distillation_level
+                    T = (T + T_link) / p.P_BSM**m_required
+                else:
+                    T = (T + T_link) / p.P_BSM
+
+                F_new  = self.F_link(a, b)
                 W_link = 1 - 2 * Q_new
 
                 # Coherence decay of the already-stored pair during T_link

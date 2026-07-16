@@ -124,7 +124,7 @@ Rid0 = 2 * 1513  # Base rate [Hz/mW]
 P = 4  # Pump power [mW]
 etaDi = 0.8  # Detector efficiency
 eta_duty_chopper = 20 / 33  # Chopper duty cycle
-alpha = 0.3  # Fiber loss [dB/km]
+alpha = 0.18  # Fiber loss [dB/km]
 
 dt = 100e-09  # Mode size [s]
 N_modes = 1200  # Optimistic modes

@@ -318,19 +318,19 @@ def main_2():
             'prob_noise_detection': 5e-04,
             'indistinguishability': 0.95,
             'fibre_phase_stability': 0.96,
-            'source_heralding_rate': 50000
+            'source_heralding_rate': 10000
         },
         'theoretical_ideal': {
-            'coherence_time': 100e-03,          # Extended (assumes advanced dynamical decoupling)
-            'transmission_to_memory_setup': 1.0,# Perfect optical routing
-            'memory_efficiency': 1.0,           # Perfect spin-wave write/read
+            'coherence_time': 20e-03,          # Extended (assumes advanced dynamical decoupling)
+            'transmission_to_memory_setup': 0.81,# Perfect optical routing
+            'memory_efficiency': 0.6,           # Perfect spin-wave write/read
             'multiplexing_modes': 1200,         # Max REIC multimode capacity
             'duty_cycle': 1.0,                  # Continuous operation (no cryostat cooling breaks)
             'source_heralding': 1.0,            # Perfect source efficiency
             'prob_noise_detection': 1e-04,      # Low but non-zero dark counts to generate QBER
             'indistinguishability': 1.0,        # Perfect quantum interference
             'fibre_phase_stability': 1.0,       # Perfect active phase locking
-            'source_heralding_rate': 50000      # Optimized clock speed
+            'source_heralding_rate': 10000      # Optimized clock speed
         }
     }
 
@@ -368,9 +368,19 @@ def main_2():
 
         p10 = 0.5 * eta_QN
         p01 = p10
+
         p11 = 4 * p10 * p01 / (g2sw ** 2) * (1 + g2sw)
 
         V = params['fibre_phase_stability'] * params['indistinguishability'] * (g2sw - 1) / (g2sw + 1)
+
+        if scenario_name == 'theoretical_ideal':
+            R_dark = 100
+            q_0 = 0.01
+            nu = 1e9
+            delta_det = 100e-12
+            p_dc = R_dark * delta_det
+            p11 = 2 * (p10 * p_dc) + p_dc ** 2
+            V = 1 - 2 * q_0
 
         Feff = 0.5 * (1 + V) * (p10 + p01) / (p10 + p01 + p11)
         F_link = Feff ** 2
@@ -482,6 +492,103 @@ def main_2():
 
         plt.close(fig)
 
+def main_NV():
+    rates, F_BD_arr, SKR_BD_arr, F_W_arr, SKR_W_arr = [], [], [], [], []
+    max_hops = 10
+    hops_arr = np.arange(1, max_hops + 1)
+    scenario_name = 'NV'
+    P_BSM = 0.5
+    dist = 0
+    p_pair = 0.05
+    eta_c = 0.5*0.9
+    eta_M = 0.3
+    p_det = 0.95
+    R_dark = 100
+    q_0 = 0.01
+    nu = 1e9
+    delta_det = 100e-12
+    P_click = p_pair * eta_c * eta_M * p_det
+    P_both = 0.5 * P_click**2
+    T_link = 1/P_both
+    R_link = nu/T_link
+    p_dc = R_dark * delta_det
+    p01 = p10 = 0.5 * P_click
+    p11 = 2 * (p10 * p_dc) + p_dc ** 2
+    V = 1 - 2 * q_0
+    F_rail_1 = F_rail_2 = 0.5 * (1 + V) * (p10 + p01) / (p10 + p01 + p11)
+    T = 1 / P_click
+    #V = V * np.exp(-(T / nu) / T_coh)
+    #F_rail_1 = 0.5 * (1 + V) * (p10 + p01) / (p10 + p01 + p11)
+    F_link = F_rail_1 * F_rail_2
+    for N in hops_arr:
+        T_total = T_link
+        for _ in range(2, N + 1):
+            T_total = (T_total + T_link) / P_BSM
+
+        R_raw = nu/T_total
+        rates.append(R_raw)
+        R_sifted = 0.5 * R_raw
+
+        # Bell-Diagonal
+        F_BD = 0.5 + 0.5 * (2 * F_link - 1) ** N
+        Q_BD = 0.5 - 0.5 * (2 * F_link - 1) ** N
+        F_BD_arr.append(F_BD)
+
+        SKR_BD = R_sifted * (1 - 2 * binary_entropy(Q_BD))
+        SKR_BD_arr.append(SKR_BD)
+
+        # Werner
+        F_W = 0.75 * ((4 * F_link - 1) / 3) ** N + 0.25
+        Q_W = 0.5 - 0.5 * ((4 * F_link - 1) / 3) ** N
+        F_W_arr.append(F_W)
+        SKR_W = R_sifted * (1 - 2 * binary_entropy(Q_W))
+        SKR_W_arr.append(SKR_W)
+
+    # ---------------------------------------------------------
+    # 6. PLOT AND SAVE SEPARATE GRAPHS
+    # ---------------------------------------------------------
+    fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+    fig.suptitle(
+        f"Swap Approximations [{scenario_name.upper()}]\n(Base F={F_link:.4f}, Base Rate={R_link:.4f} Hz)",
+        fontsize=14, fontweight='bold'
+    )
+
+    # Subplot 1: Rates
+    axs[0].plot(hops_arr, rates, 'k-o', label='Available Link Rate')
+    axs[0].set_yscale('log')
+    axs[0].set_xlabel('Number of Links (Hops)')
+    axs[0].set_ylabel('Rate (Hz)')
+    axs[0].set_title('Sequential Generation Rate')
+    axs[0].grid(True, alpha=0.3)
+    axs[0].legend()
+
+    # Subplot 2: Fidelity
+    axs[1].plot(hops_arr, F_BD_arr, 'b-o', label='Bell-Diagonal')
+    axs[1].plot(hops_arr, F_W_arr, 'r--x', label='Werner')
+    axs[1].axhline(0.5, color='gray', linestyle=':', label='Classical Limit')
+    axs[1].set_xlabel('Number of Links (Hops)')
+    axs[1].set_ylabel('End-to-End Fidelity')
+    axs[1].set_title('Fidelity Decay')
+    axs[1].grid(True, alpha=0.3)
+    axs[1].legend()
+
+    # Subplot 3: SKR
+    axs[2].plot(hops_arr, SKR_BD_arr, 'b-o', label='Bell-Diagonal')
+    axs[2].plot(hops_arr, SKR_W_arr, 'r--x', label='Werner')
+    axs[2].axhline(0.0, color='gray', linestyle=':', label='Zero SKR Boundary')
+    axs[2].set_xlabel('Number of Links (Hops)')
+    axs[2].set_ylabel('Secret Key Rate (bits/s)')
+    axs[2].set_title('SKR vs Hops')
+    axs[2].grid(True, alpha=0.3)
+    axs[2].legend()
+
+    plt.tight_layout()
+    save_path = os.path.join('tests', f'swap_approximations_{scenario_name}.png')
+    plt.savefig(save_path, dpi=300)
+    print(f"Graph successfully saved to: {save_path}")
+
+    plt.close(fig)
 if __name__ == "__main__":
     #main()
     main_2()
+    #main_NV()
