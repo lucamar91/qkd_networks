@@ -17,7 +17,7 @@ params.R_dark    = 100 # Ner term application
 params.delta_det = 100e-12
 params.p_pair    = 0.05
 params.eta_c     = 0.8
-params.P_BSM     = 0.5
+params.P_BSM     = 0.98
 params.T_coh     = 0.05    # memory coherence time [s]
 
 A, dist, coords = build_s2_graph(N=1000, beta=2.6261, mu=0.0233, scale='city')
@@ -106,6 +106,7 @@ class RepeaterParams:
         self.eta_c     = None
         self.P_BSM     = None
         self.T_coh     = None   # memory coherence time [s]
+        self.eta_M     = None
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +324,7 @@ class QuantumRepeaterNetwork:
             self.scale_km    = float(scale)
             self.scale_label = f'{scale} km'
 
-        self.Probs_mtx, self.eta_mtx = \
+        self.Probs_mtx, self.P_click = \
             self._build_prob_matrix()
 
     # ------------------------------------------------------------------
@@ -339,8 +340,7 @@ class QuantumRepeaterNetwork:
         A, d = self.A, self.dist
 
         dist = d / 2
-        p.eta_M = 1.0
-        P_click = p.p_det * p.p_pair * p.eta_c * 10 ** (-p.alpha * dist / 10) * A * p.eta_M # Probability to create photon pair x it survives to midpoint beam splitter
+        P_click = p.p_det * p.p_pair * p.eta_c * 10 ** (-p.alpha * dist / 10) * A * p.eta_M * p.eta_CM # Probability to create photon pair x it survives to midpoint beam splitter
 
         if self.multiplexing_type == 'accumulated':
             P_click= 1-(1-P_click)**self.M
@@ -353,7 +353,33 @@ class QuantumRepeaterNetwork:
         else:
             raise ValueError("multiplexing_type must be 'accumulated', 'single_burst' or None")
 
-        P_both = 0.5 * P_click/2
+        P_both = 0.5 * P_click * 2
+        return P_both, P_click
+    def _build_prob_matrix_3(self):
+        """
+        Compute per-link entanglement probability matrix and transmission
+        matrices for both detector arms.
+        """
+        p    = self.params
+        A, d = self.A, self.dist
+
+        dist = d
+        p.eta_M = 1.0
+        P_rail = p.p_det * p.p_pair * p.eta_c * p.eta_M # Probability that at node we have a single rail
+        P_click = 0.5 * (P_rail + P_rail) # Attempts it takes for the double rail node to be created (CHECK) *1/2 for one at each side
+
+        if self.multiplexing_type == 'accumulated':
+            P_click= 1-(1-P_click)**self.M
+        elif self.multiplexing_type == 'single_burst':
+            from scipy.stats import binom
+            m_required = 2 ** self.distillation_level
+            P_click = 1 - binom.cdf(m_required - 1, self.M, P_click) # Check this
+        elif self.multiplexing_type is None:
+            pass
+        else:
+            raise ValueError("multiplexing_type must be 'accumulated', 'single_burst' or None")
+
+        P_both = 10 ** (-p.alpha * dist / 10) * A * 2 * P_click * p.P_BSM# Double rail at each click x successful transmission and entanglement generation
         return P_both, P_click
 
     # ------------------------------------------------------------------
@@ -436,7 +462,7 @@ class QuantumRepeaterNetwork:
         else:
             raise ValueError("multiphoton must be True or False")
 
-    def F_link(self, a, b):
+    def F_link(self):
         """
         Per-link QBER for link (a, b), accounting for baseline QBER,
         dark counts, and multi-photon contributions.
@@ -450,9 +476,8 @@ class QuantumRepeaterNetwork:
         float   QBER in [0, 0.5]
         """
         p     = self.params
-        p_click = self.eta_mtx[a, b]
+        p_click = self.P_click
         p_dc  = p.R_dark * p.delta_det
-
         p01 = p10 = 0.5*p_click
         p11 = 2*(p10*p_dc)+p_dc**2
         V = 1-2*p.q_0
@@ -630,7 +655,7 @@ class QuantumRepeaterNetwork:
         # ── first link ───────────────────────────────────────────────
         a, b = path[0], path[1]
         T    = 1.0 / self.Probs_mtx[a, b]
-        F    = self.F_link(a, b)
+        F    = self.F_link()
         W    = (4 * F - 1) / 3
 
         if self.distillation_time == 'before_swap':
@@ -662,7 +687,7 @@ class QuantumRepeaterNetwork:
             for i in range(2, len(path)):
                 a, b = path[i - 1], path[i]
                 T_link = 1.0 / self.Probs_mtx[a, b]
-                F_new = self.F_link(a, b)
+                F_new = F
                 W_new = (4 * F_new - 1) / 3
 
                 for level in range(self.distillation_level):
@@ -742,7 +767,7 @@ class QuantumRepeaterNetwork:
         QBER  = (1 - W) / 2
         F = (1 + 3 * W) / 4
         R_raw = self.entanglement_rate(T)
-        R     = 0.5 * R_raw          # Sifting factor
+        R     = 0.5 * R_raw          # Sifting factor (WHY)
         H     = binary_entropy(QBER)
         SKR   = R * (1 - 2 * H)
         return R_raw, QBER, SKR, F
