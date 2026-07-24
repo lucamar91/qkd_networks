@@ -11,14 +11,14 @@ from sequential_repeaters import RepeaterParams, QuantumRepeaterNetwork, build_s
 params = RepeaterParams()
 params.p_det     = 0.95
 params.alpha     = 0.18
-params.q_0       = 0.01
-params.nu        = 10e6
-params.R_dark    = 100 # Ner term application
+params.V         = 0.95
+params.nu        = 167e3
+params.R_dark    = 100
 params.delta_det = 100e-12
-params.p_pair    = 0.05
 params.eta_c     = 0.8
-params.P_BSM     = 0.98
-params.T_coh     = 0.05    # memory coherence time [s]
+params.P_BSM     = 0.9993
+params.eta_M     = 0.46
+params.T_coh     = 0.05
 
 A, dist, coords = build_s2_graph(N=1000, beta=2.6261, mu=0.0233, scale='city')
 net = QuantumRepeaterNetwork(params, A, dist, coords, architecture='node',
@@ -28,6 +28,7 @@ df = net.analyze_all_paths(source=0)
 net.export_html(source=0, output_path="repeater_viz.html")
 """
 
+import copy
 import json
 import math
 import numpy as np
@@ -107,6 +108,7 @@ class RepeaterParams:
         self.P_BSM     = None
         self.T_coh     = None   # memory coherence time [s]
         self.eta_M     = None
+        self.M         = None
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +305,7 @@ class QuantumRepeaterNetwork:
 
     def __init__(self, params, A, dist, coords=None,
                  architecture='node', scale='city', multiphoton=False,
-                 distillation=False, multiplexing_type=None, M = 10e4, distillation_level=1, distillation_time='before_swap', just_transmittance=False):
+                 distillation=False, multiplexing_type=None, M = 20, distillation_level=1, distillation_time='before_swap', just_transmittance=False):
         self.params             = params
         self.A                  = A
         self.dist               = dist
@@ -324,7 +326,7 @@ class QuantumRepeaterNetwork:
             self.scale_km    = float(scale)
             self.scale_label = f'{scale} km'
 
-        self.Probs_mtx, self.P_click = \
+        self.Probs_mtx, self.P_click, self.Probs_raw = \
             self._build_prob_matrix()
 
     # ------------------------------------------------------------------
@@ -340,21 +342,77 @@ class QuantumRepeaterNetwork:
         A, d = self.A, self.dist
 
         dist = d / 2
-        P_click = p.p_det * p.eta_c * 10 ** (-p.alpha * dist / 10) * A * p.eta_M # Probability to create photon pair x it survives to midpoint beam splitter
+        P_succ = p.p_det * p.eta_c * 10 ** (-p.alpha * dist / 10) * A * p.eta_M # Probability to create photon pair x it survives to midpoint beam splitter
+        p_dc = p.R_dark * p.delta_det
+        P_both_succ = 0.5 * P_succ ** 2
+        P_both_acc = 4 * P_succ * p_dc  # The dark count noise
+        P_both_raw = P_both_succ + P_both_acc  # Total raw yield
 
         if self.multiplexing_type == 'accumulated':
-            P_click= 1-(1-P_click)**self.M
+            P_both_succ= 1-(1-P_both_succ)**self.M
+            P_both_raw = 1 - (1 - P_both_raw) ** self.M
         elif self.multiplexing_type == 'single_burst':
             from scipy.stats import binom
             m_required = 2 ** self.distillation_level
-            P_click = 1 - binom.cdf(m_required - 1, self.M, P_click) # Check this
+            P_both_succ = 1 - binom.cdf(m_required - 1, self.M, P_both_succ) # Check this
+            P_both_raw = 1 - binom.cdf(m_required - 1, self.M, P_both_raw)
         elif self.multiplexing_type is None:
             pass
         else:
             raise ValueError("multiplexing_type must be 'accumulated', 'single_burst' or None")
+        return P_both_succ, P_succ, P_both_raw
 
-        P_both = 0.5 * P_click**2
-        return P_both, P_click
+    # ------------------------------------------------------------------
+    # Pruning
+    # ------------------------------------------------------------------
+
+    def prune_by_min_rate(self, k_min):
+        """
+        Remove elementary links whose raw entanglement generation rate
+        (nu * P_both, i.e. before BSM/QBER effects) falls below k_min.
+
+        This reuses whatever multiplexing_type/M this network was built
+        with, so the same k_min means different things (and prunes to a
+        different d_max) for a multiplexed vs. non-multiplexed network --
+        which is exactly the comparison you want to be able to make.
+
+        Parameters
+        ----------
+        k_min : float
+            Minimum acceptable elementary-link entanglement rate [pairs/s].
+            k_min = 0 keeps the graph unchanged.
+
+        Returns
+        -------
+        QuantumRepeaterNetwork
+            A new network instance (same params/coords/architecture/
+            multiplexing settings) with the pruned adjacency matrix.
+            The original network (self) is left untouched.
+        """
+        rate_mtx = self.params.nu * self.Probs_mtx  # nu * P_both, per edge
+
+        A_pruned = self.A.copy()
+        A_pruned[rate_mtx < k_min] = 0
+
+        net_pruned = copy.copy(self)          # shallow copy: same params/coords/etc.
+        net_pruned.A = A_pruned
+        net_pruned.Probs_mtx, net_pruned.P_click = net_pruned._build_prob_matrix()
+        return net_pruned
+
+    def prune_sweep(self, k_min_values):
+        """
+        Run prune_by_min_rate over a list/array of thresholds.
+
+        Parameters
+        ----------
+        k_min_values : array-like of float
+
+        Returns
+        -------
+        list of QuantumRepeaterNetwork
+            One pruned network per threshold, same order as k_min_values.
+        """
+        return [self.prune_by_min_rate(k) for k in k_min_values]
 
     # ------------------------------------------------------------------
     # Public analysis methods
@@ -433,7 +491,7 @@ class QuantumRepeaterNetwork:
 
         # ── first link ───────────────────────────────────────────────
         a, b = path[0], path[1]
-        T      = 1.0 / self.Probs_mtx[a, b]
+        T      = 1.0 / self.Probs_raw[a, b]
         F_link = self.F_link(a, b)   # fidelity stays primary through the loop
 
         if self.distillation_time == 'before_swap':
@@ -461,7 +519,7 @@ class QuantumRepeaterNetwork:
             # ── subsequent links ─────────────────────────────────────
             for i in range(2, len(path)):
                 a, b = path[i - 1], path[i]
-                T_link = 1.0 / self.Probs_mtx[a, b]
+                T_link = 1.0 / self.Probs_raw[a, b]
                 F_link_new = self.F_link(a, b)
 
                 for level in range(self.distillation_level):
@@ -531,10 +589,11 @@ class QuantumRepeaterNetwork:
         QBER  = (1 - W) / 2
         F     = (1 + 3 * W) / 4
         R_raw = self.entanglement_rate(T)
+        R_entanglement = R_raw * F
         R     = 0.5 * R_raw
         H     = binary_entropy(QBER)
         SKR   = R * (1 - 2 * H)
-        return R_raw, QBER, SKR, F
+        return R_entanglement, QBER, SKR, F
 
     def path_distances(self, path):
         """
