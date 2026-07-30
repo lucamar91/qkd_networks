@@ -396,7 +396,7 @@ class QuantumRepeaterNetwork:
 
         net_pruned = copy.copy(self)          # shallow copy: same params/coords/etc.
         net_pruned.A = A_pruned
-        net_pruned.Probs_mtx, net_pruned.P_click = net_pruned._build_prob_matrix()
+        net_pruned.Probs_mtx, net_pruned.P_click, net_pruned.Probs_raw = net_pruned._build_prob_matrix()
         return net_pruned
 
     def prune_sweep(self, k_min_values):

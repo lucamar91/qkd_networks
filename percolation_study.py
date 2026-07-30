@@ -33,7 +33,11 @@ N_REPS  = 10
 
 # TODO: set this to whatever density range actually brackets the percolation
 # transition for your params (run a quick single-rep scan first if unsure).
-DENSITIES = np.logspace(-5, 0, 50)   # nodes / km^2
+DENSITIES = np.unique(np.concatenate([
+    np.logspace(-5, np.log10(3e-4), 4, endpoint=False),   # sparse tail below all transitions
+    np.logspace(np.log10(3e-4), np.log10(3e-2), 40),      # dense, covers all k_min transitions
+    np.logspace(np.log10(3e-2), 0, 5),                    # sparse tail above all transitions
+]))   # nodes / km^2
 
 # k_min thresholds to compare -- pick ~4-5 per case, spanning the practical
 # rate range for that mux setting (see the rate_vs_distance study we did
