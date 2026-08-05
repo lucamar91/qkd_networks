@@ -547,7 +547,7 @@ class QuantumRepeaterNetwork:
             # ── subsequent links ─────────────────────────────────────
             for i in range(2, len(path)):
                 a, b   = path[i - 1], path[i]
-                T_link = 1.0 / self.Probs_mtx[a, b]
+                T_link = 1.0 / self.Probs_raw[a, b]
 
                 if self.multiplexing_type == 'single_burst':
                     m_required = 2**self.distillation_level
@@ -704,10 +704,10 @@ class QuantumRepeaterNetwork:
             })
 
         metrics = {
-            'avg_rate': float(np.mean(rates_all)) if rates_all else 0.0,
+            'avg_rate': float(np.sum(rates_all)) / n_total if n_total > 0 else 0.0,
             'avg_fidelity': float(np.mean(f_all)) if f_all else 0.0,
             'avg_rate_skr': float(np.mean(rates_skr)) if rates_skr else 0.0,  # old behaviour, kept for reference
-            'avg_skr': float(np.mean(skrs)) if skrs else 0.0,
+            'avg_skr': float(np.sum(skrs)) / n_total if n_total > 0 else 0.0,
             'reachability': n_viable / n_total if n_total > 0 else 0.0,
             'n_viable_pairs': n_viable,
             'n_connected_pairs': n_connected,

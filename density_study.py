@@ -53,9 +53,9 @@ N        = 1000
 BETA     = 2.6261
 MU       = 0.0233
 N_REPS   = 10
-N_SOURCES = 50          # sampled sources per graph, see assumptions above
+N_SOURCES = 100          # sampled sources per graph, see assumptions above
 
-DENSITIES = np.logspace(-4, 0, 50)   # nodes / km^2
+DENSITIES = np.logspace(-4, 1, 50)   # nodes / km^2
 
 KMIN_NO_MUX = 100        # pairs/s, pruning threshold, no multiplexing
 KMIN_MUX20  = 1000        # pairs/s, pruning threshold, M = 20 multiplexing
@@ -107,10 +107,10 @@ def compute_network_metrics(net, n_sources, rng):
                 n_viable += 1
 
     return {
-        "avg_skr": float(np.mean(skrs)) if skrs else 0.0,
+        'avg_skr': float(np.sum(skrs)) / n_total if n_total > 0 else 0.0,
         "avg_qber": float(np.mean(qbers)) if qbers else np.nan,
         "avg_fidelity": float(np.mean(fids)) if fids else np.nan,
-        "avg_ent_rate": float(np.mean(ent_rates)) if ent_rates else 0.0,
+        'avg_rate': float(np.sum(ent_rates)) / n_total if n_total > 0 else 0.0,
         "reachability": n_viable / n_total if n_total > 0 else 0.0,
     }
 
