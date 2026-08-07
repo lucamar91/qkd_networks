@@ -26,7 +26,7 @@ from repeaters_NV import RepeaterParams, QuantumRepeaterNetwork, build_density_g
 # Config -- EDIT THESE
 # ---------------------------------------------------------------------------
 
-N       = 5000
+N       = 1000
 BETA    = 2.6261
 MU      = 0.0233
 N_REPS  = 40   # matches the reference paper's 40-instance averaging
@@ -35,7 +35,7 @@ N_REPS  = 40   # matches the reference paper's 40-instance averaging
 # sits (found from the earlier broad scan). 40 points over less than one
 # decade -- since we're only after the two k_min values we care about,
 # spending the full point budget here gives a much cleaner chi peak.
-DENSITIES = np.logspace(np.log10(1e-3), np.log10(5e-3), 40)   # nodes / km^2
+DENSITIES = np.logspace(np.log10(2e-4), np.log10(8e-4), 10)   # nodes / km^2
 
 # Only running the single k_min per case that we actually want in the
 # final X (susceptibility) graph -- matches MIDDLE_KMIN in
@@ -43,7 +43,7 @@ DENSITIES = np.logspace(np.log10(1e-3), np.log10(5e-3), 40)   # nodes / km^2
 KMIN_NO_MUX = [1e2]
 KMIN_MUX20  = [1e3]
 
-OUTPUT_CSV = "percolation_results_peak_focus_5.csv"
+OUTPUT_CSV = "percolation_results_peak_focus.csv"
 
 # Physical link parameters -- EDIT to match your real NV setup
 params = RepeaterParams()

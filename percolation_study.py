@@ -35,7 +35,7 @@ N_REPS  = 10
 # transition for your params (run a quick single-rep scan first if unsure).
 DENSITIES = np.unique(np.concatenate([
     np.logspace(-5, np.log10(3e-4), 4, endpoint=False),   # sparse tail below all transitions
-    np.logspace(np.log10(3e-4), np.log10(3e-2), 40),      # dense, covers all k_min transitions
+    np.logspace(np.log10(3e-4), np.log10(3e-2), 20),      # dense, covers all k_min transitions
     np.logspace(np.log10(3e-2), 0, 5),                    # sparse tail above all transitions
 ]))   # nodes / km^2
 

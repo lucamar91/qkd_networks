@@ -192,11 +192,11 @@ def density_to_scale(N, rho):
     """
     Convert a spatial node density to the km scale factor used by build_s2_graph.
 
-    The S2 graph embeds N nodes in a unit-sphere patch whose angular radius is
-    normalised to 1 radian. When we want nodes to live inside a circular region
-    of area A = N / rho [km²] we need:
+    The S2 graph embeds N nodes across the surface of a sphere.
+    To achieve a specific spatial density rho [nodes / km²] over the
+    full surface area A = 4 * pi * r², we need:
 
-        pi * r² = N / rho   →   r = sqrt(N / (pi * rho))
+        4 * pi * r² = N / rho   ->   r = sqrt(N / (4 * pi * rho))
 
     This radius [km] is then passed as the ``scale`` argument of build_s2_graph
     so that all edge distances are expressed in km consistently.
@@ -210,7 +210,7 @@ def density_to_scale(N, rho):
     -------
     scale_km : float  Scale factor [km / radian] for build_s2_graph.
     """
-    return np.sqrt(N / (np.pi * rho))
+    return np.sqrt(N / (4 * np.pi * rho))
 
 
 def build_density_graph(N, rho, beta, mu, D=2, sample_from_file=False):
