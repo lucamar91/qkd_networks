@@ -960,7 +960,7 @@ class QuantumNetworkBuilder:
 
     def plot_network_top(self):
         print("Generating Fully Topological Folium Map...")
-        m = folium.Map(location=[40.4, -3.7], zoom_start=6, tiles="CartoDB dark_matter", prefer_canvas=True)
+        m = folium.Map(location=[40.4, -3.7], zoom_start=6, tiles="CartoDB positron", prefer_canvas=True)
 
         # 1. Draw edges (Now with Dynamic Topology Colors!)
         for u, v, edge_data in self.G.edges(data=True):
@@ -1595,7 +1595,7 @@ for city in cities_to_map:
 
 # 3. Save the final comprehensive map
 #print("\n--- GENERATING FINAL MAP ---")
-net3.evaluate_tier4_modes()
-#net3.plot_network_top()
+#net3.evaluate_tier4_modes()
+net3.plot_network_top()
 
 

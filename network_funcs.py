@@ -110,55 +110,93 @@ def S2_graph_definite_N(N, beta, mu, D=2, sample_from_file=False, return_coords=
 def clean_the_dust(Graph):       # only takes the largest connected component of a graph
     return Graph.subgraph(max(nx.connected_components(Graph), key=len)).copy()
 
-def plot_graph_on_sphere(cartesian_coords, adjacency_matrix, R, filename='earth', caption='',
-                         bckgrnd_color = 'midnightblue', pt_color='yellow', edge_color='white'):    # ft chatgpt
-    # could be improved, eg R must be the length of the coords vecs so its just messy to input it separately
-    fig = plt.figure()
+
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+
+def plot_graph_on_sphere(cartesian_coords, adjacency_matrix, R=None, filename='network_sphere', caption='',
+                         bckgrnd_color='white', pt_color='#ff7f0e', edge_color='#1f77b4',
+                         elev=20, azim=30):
+    if R is None:
+        R = np.linalg.norm(cartesian_coords[0])
+
+    fig = plt.figure(figsize=(10, 10))
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
     ax = fig.add_subplot(111, projection='3d')
-    # generate cartesian coords arrays
+
+    # Fix the view BEFORE computing visibility, and disable mpl's own depth sorting
+    ax.view_init(elev=elev, azim=azim)
+    ax.computed_zorder = False
+
+    # Camera view vector for these elev/azim (matches mplot3d's convention)
+    elev_r, azim_r = np.radians(elev), np.radians(azim)
+    view_vec = np.array([
+        np.cos(elev_r) * np.cos(azim_r),
+        np.cos(elev_r) * np.sin(azim_r),
+        np.sin(elev_r),
+    ])
+
     x = cartesian_coords[:, 0]
     y = cartesian_coords[:, 1]
     z = cartesian_coords[:, 2]
-    # represent transparent sphere
+
+    # 1. Sphere — always drawn first / behind
     u = np.linspace(0, 2 * np.pi, 100)
     v = np.linspace(0, np.pi, 100)
-    x_sphere = R * np.outer(np.cos(u), np.sin(v))
-    y_sphere = R * np.outer(np.sin(u), np.sin(v))
-    z_sphere = R * np.outer(np.ones(np.size(u)), np.cos(v))
-    ax.plot_surface(x_sphere, y_sphere, z_sphere, color='blue', alpha=0.2)
-    # represent points
-    ax.scatter(x, y, z, s=50, color=pt_color)
-    # represent paths between points as geodetic curves
+    R_sphere = R
+    x_sphere = R_sphere * np.outer(np.cos(u), np.sin(v))
+    y_sphere = R_sphere * np.outer(np.sin(u), np.sin(v))
+    z_sphere = R_sphere * np.outer(np.ones(np.size(u)), np.cos(v))
+    ax.plot_surface(x_sphere, y_sphere, z_sphere, color='gainsboro',
+                    edgecolor='none', alpha=0.3, shade=False, zorder=0)
+
+    # 2. Edges — only draw the front-facing portion of each arc
     n_points = cartesian_coords.shape[0]
     for i in range(n_points):
-        for j in range(i+1, n_points):
+        for j in range(i + 1, n_points):
             if adjacency_matrix[i, j] == 1:
-                phi = np.arccos(np.dot(cartesian_coords[i], cartesian_coords[j]) / (R**2))    # the angle bw the 2 vecs
-                t = np.linspace(0, phi, 100)               # for the parametric curve
-                x_arc = np.sin(t) * (cartesian_coords[i, 0] / np.sin(phi)) + np.sin(phi - t) * (cartesian_coords[j, 0] / np.sin(phi))
-                y_arc = np.sin(t) * (cartesian_coords[i, 1] / np.sin(phi)) + np.sin(phi - t) * (cartesian_coords[j, 1] / np.sin(phi))
-                z_arc = np.sin(t) * (cartesian_coords[i, 2] / np.sin(phi)) + np.sin(phi - t) * (cartesian_coords[j, 2] / np.sin(phi))
-                ax.plot(x_arc, y_arc, z_arc, color=edge_color, alpha=0.5)
-    # require same scale for all axes
-    ax.set_xlim([-R, R])
-    ax.set_ylim([-R, R])
-    ax.set_zlim([-R, R])
+                dot_prod = np.clip(np.dot(cartesian_coords[i], cartesian_coords[j]) / (R ** 2), -1.0, 1.0)
+                phi = np.arccos(dot_prod)
+                if phi > 1e-6:
+                    t = np.linspace(0, phi, 200)
+                    x_arc = np.sin(t) * (cartesian_coords[i, 0] / np.sin(phi)) + np.sin(phi - t) * (cartesian_coords[j, 0] / np.sin(phi))
+                    y_arc = np.sin(t) * (cartesian_coords[i, 1] / np.sin(phi)) + np.sin(phi - t) * (cartesian_coords[j, 1] / np.sin(phi))
+                    z_arc = np.sin(t) * (cartesian_coords[i, 2] / np.sin(phi)) + np.sin(phi - t) * (cartesian_coords[j, 2] / np.sin(phi))
+
+                    visible = (x_arc * view_vec[0] + y_arc * view_vec[1] + z_arc * view_vec[2]) > 0
+                    # Mask out the hidden portion so the line breaks cleanly at the horizon
+                    x_masked = np.where(visible, x_arc, np.nan)
+                    y_masked = np.where(visible, y_arc, np.nan)
+                    z_masked = np.where(visible, z_arc, np.nan)
+                    ax.plot(x_masked, y_masked, z_masked,
+                            color=edge_color, alpha=0.8, linewidth=1.5, zorder=1)
+
+    # 3. Nodes — only draw if front-facing
+    dot_nodes = x * view_vec[0] + y * view_vec[1] + z * view_vec[2]
+    for i in range(n_points):
+        if dot_nodes[i] > 0:
+            ax.plot([x[i]], [y[i]], [z[i]], marker='o', markersize=4.5,
+                    color=pt_color, markeredgecolor='black', markeredgewidth=0.3,
+                    linestyle='none', zorder=2)
+
+    ax.set_xlim([-R, R]); ax.set_ylim([-R, R]); ax.set_zlim([-R, R])
     ax.set_box_aspect([1, 1, 1])
     ax.axis('off')
-    #plt.rcParams['figure.figsize'] = [15,15]
-    fig.set_size_inches(15,15)
+    fig.patch.set_facecolor(bckgrnd_color)
     ax.set_facecolor(bckgrnd_color)
-    #plt.show()            # interactive 3d mode (not compatible w savefig)
-    fig.text(.5, .15, s=caption, color=edge_color, fontsize=30)
-    output_dir = 'earth_frames'
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    if not os.path.exists(output_dir + '/' + bckgrnd_color):
-        os.makedirs(output_dir + '/' + bckgrnd_color)
-    filename = 'earth_frames/' + bckgrnd_color + '/' + filename + '.png'
-    plt.savefig(filename, dpi=300, transparent=True)
+    if caption:
+        text_color = 'black' if bckgrnd_color == 'white' else edge_color
+        fig.text(0.5, 0.05, s=caption, color=text_color, fontsize=20, ha='center')
+
+    output_dir = 'network_frames'
+    bg_folder = 'white_bg' if bckgrnd_color == 'white' else bckgrnd_color
+    full_output_dir = os.path.join(output_dir, bg_folder)
+    os.makedirs(full_output_dir, exist_ok=True)
+    out_filepath = os.path.join(full_output_dir, f"{filename}.png")
+    plt.savefig(out_filepath, dpi=600, facecolor=fig.get_facecolor(),
+                transparent=False, bbox_inches='tight', pad_inches=0)
     plt.close(fig)
-    return
 
 '''def gif_from_list(frame_list, output_path = 'blackout.mp4'):
     with imageio.get_writer(output_path, fps=25) as writer:

@@ -64,9 +64,9 @@ BETA       = 2.6261
 MU         = 0.0233
 RHO_FIXED  = 1.0          # nodes/km^2, i.e. 10^0 -- fixed for this study
 
-N_REPS     = 5           # <-- see the timing discussion; lower this if tight on time
-N_SOURCES  = 500
-SWEEP_POINTS = 8         # <-- max 10 per your request; drop to 6-8 if tight on time
+N_REPS     = 10           # <-- see the timing discussion; lower this if tight on time
+N_SOURCES  = 150
+SWEEP_POINTS = 10         # <-- max 10 per your request; drop to 6-8 if tight on time
 
 KMIN_NO_MUX = 100         # pairs/s, pruning threshold, no multiplexing
 KMIN_MUX20  = 1000        # pairs/s, pruning threshold, M = 20 multiplexing
@@ -134,7 +134,7 @@ SWEEPS = {
     "P_BSM":     (np.linspace(0.1, 1.0, SWEEP_POINTS),                       make_pbsm_params),
     "T_coh":     (np.logspace(np.log10(0.01), np.log10(10), SWEEP_POINTS),   make_tcoh_params),
     "eta_total": (np.linspace(0.03, 0.50, SWEEP_POINTS),                     make_efficiency_params),
-    "alpha":     (np.linspace(0.14, 0.22, SWEEP_POINTS),                     make_alpha_params),
+    "alpha":     (np.linspace(0.10, 0.22, SWEEP_POINTS),                     make_alpha_params),
     "V":         (np.linspace(0.8, 0.99, SWEEP_POINTS),                      make_visibility_params),
 }
 

@@ -14,7 +14,7 @@ import shutil    # to copy files at the end of the script
 # Computed quantities: connectivity, susceptibility, average key rate, average geodetic and topological distances, degree distribution, clustering coeff.
 # The version of the QKD protocol used (CV/DV/hybrid) can be changed through the variable 'd_hybrid' below.
 
-Ns = [1000]                    # list of network sizes
+Ns = [300]                    # list of network sizes
 
 rate_min = 0
 n_nodes_for_dijkstra = 20

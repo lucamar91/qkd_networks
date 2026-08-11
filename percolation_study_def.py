@@ -26,7 +26,7 @@ from repeaters_NV import RepeaterParams, QuantumRepeaterNetwork, build_density_g
 # Config -- EDIT THESE
 # ---------------------------------------------------------------------------
 
-N       = 1000
+N       = 5000
 BETA    = 2.6261
 MU      = 0.0233
 N_REPS  = 40   # matches the reference paper's 40-instance averaging
@@ -43,7 +43,7 @@ DENSITIES = np.logspace(np.log10(2e-4), np.log10(8e-4), 10)   # nodes / km^2
 KMIN_NO_MUX = [1e2]
 KMIN_MUX20  = [1e3]
 
-OUTPUT_CSV = "percolation_results_peak_focus.csv"
+OUTPUT_CSV = "percolation_results_peak_focus_4.csv"
 
 # Physical link parameters -- EDIT to match your real NV setup
 params = RepeaterParams()
